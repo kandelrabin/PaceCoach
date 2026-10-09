@@ -12,6 +12,8 @@ struct ContentView: View {
         NavigationStack {
             PaceSetupView()
         }
+        .tint(PaceTheme.accent)
+        .preferredColorScheme(.dark)
     }
 }
 

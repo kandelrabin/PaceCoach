@@ -1,104 +1,83 @@
 import SwiftUI
 
 struct PaceSetupView: View {
-    @State private var fasterPaceSeconds = 5.0 * 60 + 50
-    @State private var slowerPaceSeconds = 6.0 * 60 + 10
+    private enum PaceField: Hashable { case faster, slower }
+    private let minimumPace = 180
+    private let maximumPace = 720
+
+    @State private var fasterPaceSeconds = 5 * 60 + 50
+    @State private var slowerPaceSeconds = 6 * 60 + 10
+    @FocusState private var focusedPicker: PaceField?
 
     var body: some View {
-        VStack(spacing: 5) {
-            Text("Target Pace")
-                .font(.headline)
+        GeometryReader { geometry in
+            let wheelHeight = min(80, max(64, geometry.size.height * 0.34))
 
-            HStack(alignment: .firstTextBaseline, spacing: 4) {
-                Text("\(formattedPace(fasterPaceSeconds)) – \(formattedPace(slowerPaceSeconds))")
-                    .font(.system(.title3, design: .rounded, weight: .semibold))
-                    .monospacedDigit()
-                    .minimumScaleFactor(0.8)
-                    .lineLimit(1)
-                Text("min/km")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel("Target pace range")
-
-            VStack(spacing: 4) {
-                paceLink(title: "Faster", value: fasterPaceSeconds) {
-                    PaceAdjustmentView(title: "Faster", paceSeconds: $fasterPaceSeconds)
+            VStack(spacing: 0) {
+                HStack(spacing: 6) {
+                    paceWheel(title: "Faster", symbol: "hare.fill",
+                              selection: $fasterPaceSeconds,
+                              values: minimumPace..<slowerPaceSeconds,
+                              field: .faster, height: wheelHeight)
+                    paceWheel(title: "Slower", symbol: "tortoise.fill",
+                              selection: $slowerPaceSeconds,
+                              values: (fasterPaceSeconds + 1)..<(maximumPace + 1),
+                              field: .slower, height: wheelHeight)
                 }
-                paceLink(title: "Slower", value: slowerPaceSeconds) {
-                    PaceAdjustmentView(title: "Slower", paceSeconds: $slowerPaceSeconds)
-                }
-            }
 
-            NavigationLink {
-                ActiveRunView(
-                    fasterPaceSeconds: fasterPaceSeconds,
-                    slowerPaceSeconds: slowerPaceSeconds
-                )
-            } label: {
-                Text("Start Run")
+                Spacer(minLength: 6)
+
+                NavigationLink {
+                    ActiveRunView(fasterPaceSeconds: Double(fasterPaceSeconds),
+                                  slowerPaceSeconds: Double(slowerPaceSeconds))
+                } label: {
+                    Label("Start Run", systemImage: "figure.run")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(PaceTheme.accent)
+                .padding(.horizontal, 4)
+                .padding(.bottom, 10)
             }
-            .buttonStyle(.borderedProminent)
-            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 8)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
+        .background(PaceTheme.background)
+        .onAppear { focusedPicker = .faster }
     }
 
-    private func paceLink<Destination: View>(
-        title: String,
-        value: Double,
-        @ViewBuilder destination: () -> Destination
-    ) -> some View {
-        NavigationLink(destination: destination) {
-            HStack {
+    private func paceWheel(title: String, symbol: String,
+                           selection: Binding<Int>, values: Range<Int>,
+                           field: PaceField, height: CGFloat) -> some View {
+        VStack(spacing: 3) {
+            VStack(spacing: 2) {
+                Image(systemName: symbol)
+                    .font(.system(size: 18, weight: .semibold))
+                    .frame(height: 20)
+                    .foregroundStyle(focusedPicker == field ? PaceTheme.accent : PaceTheme.primaryText)
                 Text(title)
-                    .font(.subheadline)
-                Spacer(minLength: 4)
-                Text(formattedPace(value))
-                    .font(.system(.body, design: .rounded, weight: .medium))
-                    .monospacedDigit()
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(PaceTheme.primaryText)
             }
-            .padding(.horizontal, 10)
-            .frame(maxWidth: .infinity, minHeight: 32)
-            .background(.quaternary, in: Capsule())
+            .frame(maxWidth: .infinity)
+
+            Picker(title, selection: selection) {
+                ForEach(values, id: \.self) { seconds in
+                    Text(formattedPace(Double(seconds)))
+                        .font(.system(.body, design: .rounded, weight: .semibold))
+                        .monospacedDigit()
+                        .tag(seconds)
+                }
+            }
+            .pickerStyle(.wheel)
+            .labelsHidden()
+            .focused($focusedPicker, equals: field)
+            .frame(maxWidth: .infinity)
+            .frame(height: height)
+            .accessibilityLabel("\(title) target pace, minutes per kilometre")
         }
-        .buttonStyle(.plain)
-    }
-}
-
-private struct PaceAdjustmentView: View {
-    let title: String
-    @Binding var paceSeconds: Double
-
-    var body: some View {
-        VStack(spacing: 4) {
-            Text("min/km")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            Text(formattedPace(paceSeconds))
-                .font(.system(size: 40, weight: .semibold, design: .rounded))
-                .monospacedDigit()
-                .focusable()
-                .digitalCrownRotation(
-                    $paceSeconds,
-                    from: 180.0,
-                    through: 720.0,
-                    by: 1.0,
-                    sensitivity: .medium,
-                    isContinuous: false,
-                    isHapticFeedbackEnabled: false
-                )
-
-            Text("Turn Digital Crown")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .navigationTitle(title)
-        .navigationBarTitleDisplayMode(.inline)
+        .frame(maxWidth: .infinity)
     }
 }
 
