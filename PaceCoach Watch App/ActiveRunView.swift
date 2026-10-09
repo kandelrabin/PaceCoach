@@ -4,13 +4,14 @@ struct ActiveRunView: View {
     let fasterPaceSeconds: Double
     let slowerPaceSeconds: Double
     @Environment(\.dismiss) private var dismiss
+    @StateObject private var workoutManager = WorkoutManager()
 
     var body: some View {
         VStack(spacing: 4) {
             Spacer(minLength: 0)
 
             HStack(alignment: .firstTextBaseline, spacing: 4) {
-                Text("--:--")
+                Text(workoutManager.currentPaceSecondsPerKilometer.map(formattedPace) ?? "--:--")
                     .font(.system(size: 48, weight: .bold, design: .rounded))
                     .monospacedDigit()
                 Text("/km")
@@ -21,6 +22,17 @@ struct ActiveRunView: View {
             Text("Current Pace")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+
+            if let errorMessage = workoutManager.errorMessage {
+                Text(errorMessage)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            } else if workoutManager.isStarting {
+                Text("Starting Workout")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
 
             Spacer(minLength: 8)
 
@@ -36,14 +48,21 @@ struct ActiveRunView: View {
             }
 
             Button("End Run") {
-                dismiss()
+                Task {
+                    await workoutManager.endWorkout()
+                    dismiss()
+                }
             }
             .buttonStyle(.bordered)
             .padding(.top, 6)
+            .disabled(workoutManager.isStarting)
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
         .navigationBarBackButtonHidden()
         .toolbar(.hidden, for: .navigationBar)
+        .task {
+            await workoutManager.startWorkout()
+        }
     }
 }
