@@ -3,6 +3,8 @@ import HealthKit
 
 @MainActor
 final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate, HKLiveWorkoutBuilderDelegate {
+    private static let speedFreshnessTimeout: TimeInterval = 10
+
     @Published private(set) var currentPaceSecondsPerKilometer: Double?
     @Published private(set) var isStarting = false
     @Published private(set) var errorMessage: String?
@@ -12,6 +14,8 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
     private var workoutBuilder: HKLiveWorkoutBuilder?
     private var endContinuation: CheckedContinuation<Void, Never>?
     private var isFinishingWorkout = false
+    private var latestSpeedSampleDate: Date?
+    private var paceExpirationTask: Task<Void, Never>?
 
     func startWorkout() async {
         guard !isStarting, workoutSession == nil else { return }
@@ -94,22 +98,53 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
     ) {
         guard let runningSpeedType = HKObjectType.quantityType(forIdentifier: .runningSpeed),
               collectedTypes.contains(runningSpeedType),
-              let speedQuantity = workoutBuilder.statistics(for: runningSpeedType)?.mostRecentQuantity() else {
+              let statistics = workoutBuilder.statistics(for: runningSpeedType),
+              let speedQuantity = statistics.mostRecentQuantity(),
+              let sampleDate = statistics.mostRecentQuantityDateInterval()?.end else {
             return
         }
 
         let speedInMetersPerSecond = speedQuantity.doubleValue(
             for: HKUnit.meter().unitDivided(by: HKUnit.second())
         )
-        guard speedInMetersPerSecond > 0 else { return }
-
-        let paceSecondsPerKilometer = 1_000 / speedInMetersPerSecond
         Task { @MainActor [weak self] in
-            self?.currentPaceSecondsPerKilometer = paceSecondsPerKilometer
+            self?.receiveSpeed(speedInMetersPerSecond, sampleDate: sampleDate)
         }
     }
 
     @objc nonisolated func workoutBuilderDidCollectEvent(_ workoutBuilder: HKLiveWorkoutBuilder) { }
+
+    private func receiveSpeed(_ speedInMetersPerSecond: Double, sampleDate: Date) {
+        guard latestSpeedSampleDate.map({ sampleDate > $0 }) ?? true else { return }
+        latestSpeedSampleDate = sampleDate
+
+        let sampleAge = Date().timeIntervalSince(sampleDate)
+        guard speedInMetersPerSecond.isFinite,
+              speedInMetersPerSecond > 0.5,
+              sampleAge < Self.speedFreshnessTimeout else {
+            clearCurrentPace()
+            return
+        }
+
+        currentPaceSecondsPerKilometer = 1_000 / speedInMetersPerSecond
+        paceExpirationTask?.cancel()
+
+        let remainingFreshness = max(0, Self.speedFreshnessTimeout - max(0, sampleAge))
+        let sleepNanoseconds = UInt64(remainingFreshness * 1_000_000_000)
+        paceExpirationTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: sleepNanoseconds)
+            guard !Task.isCancelled,
+                  let self,
+                  self.latestSpeedSampleDate == sampleDate else { return }
+            self.clearCurrentPace()
+        }
+    }
+
+    private func clearCurrentPace() {
+        paceExpirationTask?.cancel()
+        paceExpirationTask = nil
+        currentPaceSecondsPerKilometer = nil
+    }
 
     private func finishWorkout(at endDate: Date) async {
         guard !isFinishingWorkout else { return }
@@ -127,7 +162,8 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
 
         workoutBuilder = nil
         workoutSession = nil
-        currentPaceSecondsPerKilometer = nil
+        clearCurrentPace()
+        latestSpeedSampleDate = nil
         isFinishingWorkout = false
         endContinuation?.resume()
         endContinuation = nil
