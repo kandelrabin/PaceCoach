@@ -6,6 +6,14 @@ struct ActiveRunView: View {
     @Environment(\.dismiss) private var dismiss
     @StateObject private var workoutManager = WorkoutManager()
 
+    private var paceClassification: PaceClassification? {
+        PaceClassification.classify(
+            currentPaceSecondsPerKilometer: workoutManager.currentPaceSecondsPerKilometer,
+            fasterPaceSeconds: fasterPaceSeconds,
+            slowerPaceSeconds: slowerPaceSeconds
+        )
+    }
+
     var body: some View {
         VStack(spacing: 4) {
             Spacer(minLength: 0)
@@ -22,6 +30,11 @@ struct ActiveRunView: View {
             Text("Current Pace")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+
+            if let paceClassification {
+                Text(paceClassification.label)
+                    .font(.headline)
+            }
 
             if let errorMessage = workoutManager.errorMessage {
                 Text(errorMessage)
