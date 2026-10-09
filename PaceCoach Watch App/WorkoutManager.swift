@@ -6,6 +6,7 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
     private static let speedFreshnessTimeout: TimeInterval = 10
 
     @Published private(set) var currentPaceSecondsPerKilometer: Double?
+    @Published private(set) var coachingDecision: PaceDecisionEngine.Decision?
     @Published private(set) var isStarting = false
     @Published private(set) var errorMessage: String?
 
@@ -16,6 +17,15 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
     private var isFinishingWorkout = false
     private var latestSpeedSampleDate: Date?
     private var paceExpirationTask: Task<Void, Never>?
+    private var decisionEngine: PaceDecisionEngine
+
+    init(fasterPaceSeconds: Double, slowerPaceSeconds: Double) {
+        decisionEngine = PaceDecisionEngine(
+            fasterPaceSeconds: fasterPaceSeconds,
+            slowerPaceSeconds: slowerPaceSeconds
+        )
+        super.init()
+    }
 
     func startWorkout() async {
         guard !isStarting, workoutSession == nil else { return }
@@ -126,7 +136,12 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
             return
         }
 
-        currentPaceSecondsPerKilometer = 1_000 / speedInMetersPerSecond
+        let paceSecondsPerKilometer = 1_000 / speedInMetersPerSecond
+        currentPaceSecondsPerKilometer = paceSecondsPerKilometer
+        coachingDecision = decisionEngine.addSample(
+            paceSecondsPerKilometer: paceSecondsPerKilometer,
+            at: sampleDate
+        )
         paceExpirationTask?.cancel()
 
         let remainingFreshness = max(0, Self.speedFreshnessTimeout - max(0, sampleAge))
@@ -144,6 +159,8 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
         paceExpirationTask?.cancel()
         paceExpirationTask = nil
         currentPaceSecondsPerKilometer = nil
+        decisionEngine.reset()
+        coachingDecision = nil
     }
 
     private func finishWorkout(at endDate: Date) async {

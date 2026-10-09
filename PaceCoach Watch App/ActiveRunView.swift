@@ -4,7 +4,16 @@ struct ActiveRunView: View {
     let fasterPaceSeconds: Double
     let slowerPaceSeconds: Double
     @Environment(\.dismiss) private var dismiss
-    @StateObject private var workoutManager = WorkoutManager()
+    @StateObject private var workoutManager: WorkoutManager
+
+    init(fasterPaceSeconds: Double, slowerPaceSeconds: Double) {
+        self.fasterPaceSeconds = fasterPaceSeconds
+        self.slowerPaceSeconds = slowerPaceSeconds
+        _workoutManager = StateObject(wrappedValue: WorkoutManager(
+            fasterPaceSeconds: fasterPaceSeconds,
+            slowerPaceSeconds: slowerPaceSeconds
+        ))
+    }
 
     private var paceClassification: PaceClassification? {
         PaceClassification.classify(
@@ -12,6 +21,15 @@ struct ActiveRunView: View {
             fasterPaceSeconds: fasterPaceSeconds,
             slowerPaceSeconds: slowerPaceSeconds
         )
+    }
+
+    private var coachingLabel: String {
+        guard workoutManager.currentPaceSecondsPerKilometer != nil else { return "--" }
+        switch workoutManager.coachingDecision {
+        case .tooFast: return "SLOW DOWN"
+        case .tooSlow: return "SPEED UP"
+        case nil: return "NO CHANGE"
+        }
     }
 
     var body: some View {
@@ -32,9 +50,15 @@ struct ActiveRunView: View {
                 .foregroundStyle(.secondary)
 
             if let paceClassification {
-                Text(paceClassification.label)
-                    .font(.headline)
+                Text("LIVE: \(paceClassification.label)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
+
+            Text("COACH: \(coachingLabel)")
+                .font(.headline)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
 
             if let errorMessage = workoutManager.errorMessage {
                 Text(errorMessage)
