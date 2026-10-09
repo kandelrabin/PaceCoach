@@ -15,86 +15,65 @@ struct ActiveRunView: View {
         ))
     }
 
-    private var paceClassification: PaceClassification? {
-        PaceClassification.classify(
-            currentPaceSecondsPerKilometer: workoutManager.currentPaceSecondsPerKilometer,
-            fasterPaceSeconds: fasterPaceSeconds,
-            slowerPaceSeconds: slowerPaceSeconds
-        )
-    }
-
-    private var coaching: (title: String, symbol: String, needsAdjustment: Bool) {
+    private var coaching: (title: String, symbol: String) {
         guard workoutManager.currentPaceSecondsPerKilometer != nil else {
-            return ("FINDING PACE", "location", false)
+            return ("FINDING PACE", "hourglass")
         }
         switch workoutManager.coachingDecision {
-        case .tooFast: return ("SLOW DOWN", "arrow.down", true)
-        case .tooSlow: return ("SPEED UP", "arrow.up", true)
-        case nil: return ("HOLD PACE", "checkmark", false)
+        case .tooFast: return ("SLOW DOWN", "arrow.down")
+        case .tooSlow: return ("SPEED UP", "arrow.up")
+        case nil: return ("ON PACE", "checkmark")
         }
     }
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 10) {
-                VStack(spacing: 0) {
-                    Text("CURRENT PACE")
-                        .font(.caption2.weight(.semibold))
-                        .tracking(1.2)
+        GeometryReader { geometry in
+            let paceSize = min(52, max(42, geometry.size.height * 0.26))
+            let cardHeight = min(58, max(48, geometry.size.height * 0.28))
+
+            VStack(spacing: 0) {
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Text(workoutManager.currentPaceSecondsPerKilometer.map(formattedPace) ?? "--:--")
+                        .font(.system(size: paceSize, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(PaceTheme.primaryText)
+                        .minimumScaleFactor(0.75)
+                    Text("/km")
+                        .font(.callout)
                         .foregroundStyle(PaceTheme.secondaryText)
-                    HStack(alignment: .firstTextBaseline, spacing: 3) {
-                        Text(workoutManager.currentPaceSecondsPerKilometer.map(formattedPace) ?? "--:--")
-                            .font(.system(size: 45, weight: .bold, design: .rounded))
-                            .monospacedDigit()
-                            .foregroundStyle(PaceTheme.primaryText)
-                            .minimumScaleFactor(0.75)
-                        Text("/km")
-                            .font(.caption)
-                            .foregroundStyle(PaceTheme.secondaryText)
-                    }
-                    .lineLimit(1)
                 }
+                .lineLimit(1)
+                .frame(maxWidth: .infinity)
+                .padding(.top, 2)
+
+                Spacer(minLength: 4)
 
                 Label(coaching.title, systemImage: coaching.symbol)
                     .font(.system(.headline, design: .rounded, weight: .bold))
-                    .foregroundStyle(coaching.needsAdjustment ? PaceTheme.accent : PaceTheme.primaryText)
+                    .foregroundStyle(PaceTheme.primaryText)
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 7)
-                    .background(PaceTheme.accent.opacity(coaching.needsAdjustment ? 0.18 : 0.10),
-                                in: RoundedRectangle(cornerRadius: 12))
-                    .accessibilityLabel("Coach: \(coaching.title)")
-
-                VStack(spacing: 2) {
-                    Text("TARGET RANGE")
-                        .font(.caption2.weight(.semibold))
-                        .tracking(1)
-                        .foregroundStyle(PaceTheme.secondaryText)
-                    Text("\(formattedPace(fasterPaceSeconds))–\(formattedPace(slowerPaceSeconds)) /km")
-                        .font(.system(.subheadline, design: .rounded, weight: .semibold))
-                        .monospacedDigit()
-                        .foregroundStyle(PaceTheme.primaryText)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
-                }
-
-                if let paceClassification {
-                    Text("LIVE  ·  \(paceClassification.label)")
-                        .font(.caption2)
-                        .foregroundStyle(PaceTheme.secondaryText)
-                }
+                    .frame(height: cardHeight)
+                    .background(PaceTheme.accent.opacity(0.68),
+                                in: RoundedRectangle(cornerRadius: 14))
+                    .accessibilityLabel("\(coaching.title)")
 
                 if let errorMessage = workoutManager.errorMessage {
                     Text(errorMessage)
                         .font(.caption2)
                         .foregroundStyle(PaceTheme.secondaryText)
                         .multilineTextAlignment(.center)
+                        .lineLimit(2)
+                        .padding(.top, 4)
                 } else if workoutManager.isStarting {
                     Text("Starting workout…")
                         .font(.caption2)
                         .foregroundStyle(PaceTheme.secondaryText)
+                        .padding(.top, 4)
                 }
+
+                Spacer(minLength: 4)
 
                 Button {
                     Task {
@@ -108,9 +87,10 @@ struct ActiveRunView: View {
                 .buttonStyle(.bordered)
                 .tint(PaceTheme.secondaryText)
                 .disabled(workoutManager.isStarting)
+                .padding(.bottom, 8)
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 8)
+            .padding(.horizontal, 10)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(PaceTheme.background)
         .navigationBarBackButtonHidden()
