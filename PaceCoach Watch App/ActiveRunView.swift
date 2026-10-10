@@ -16,13 +16,11 @@ struct ActiveRunView: View {
     }
 
     private var coaching: (title: String, symbol: String) {
-        guard workoutManager.currentPaceSecondsPerKilometer != nil else {
-            return ("FINDING PACE", "hourglass")
-        }
-        switch workoutManager.coachingDecision {
-        case .tooFast: return ("SLOW DOWN", "arrow.down")
-        case .tooSlow: return ("SPEED UP", "arrow.up")
-        case nil: return ("ON PACE", "checkmark")
+        switch workoutManager.coachingState {
+        case .findingPace: return ("FINDING PACE", "hourglass")
+        case .onPace: return ("ON PACE", "checkmark")
+        case .speedUp: return ("SPEED UP", "arrow.up")
+        case .slowDown: return ("SLOW DOWN", "arrow.down")
         }
     }
 

@@ -6,7 +6,7 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
     private static let speedFreshnessTimeout: TimeInterval = 10
 
     @Published private(set) var currentPaceSecondsPerKilometer: Double?
-    @Published private(set) var coachingDecision: PaceDecisionEngine.Decision?
+    @Published private(set) var coachingState: PaceDecisionEngine.CoachingState = .findingPace
     @Published private(set) var isStarting = false
     @Published private(set) var errorMessage: String?
 
@@ -18,6 +18,7 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
     private var latestSpeedSampleDate: Date?
     private var paceExpirationTask: Task<Void, Never>?
     private var decisionEngine: PaceDecisionEngine
+    private let voiceCoaching = VoiceCoachingCoordinator()
 
     init(fasterPaceSeconds: Double, slowerPaceSeconds: Double) {
         decisionEngine = PaceDecisionEngine(
@@ -30,6 +31,7 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
     func startWorkout() async {
         guard !isStarting, workoutSession == nil else { return }
 
+        resetWorkoutState()
         isStarting = true
         errorMessage = nil
         defer { isStarting = false }
@@ -63,8 +65,10 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
 
             let startDate = Date()
             session.startActivity(with: startDate)
+            voiceCoaching.startWorkout()
             try await builder.beginCollection(at: startDate)
         } catch {
+            resetWorkoutState()
             workoutBuilder?.discardWorkout()
             workoutSession?.end()
             workoutBuilder = nil
@@ -76,6 +80,7 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
     func endWorkout() async {
         guard let workoutSession else { return }
 
+        voiceCoaching.endWorkout()
         await withCheckedContinuation { continuation in
             endContinuation = continuation
             workoutSession.stopActivity(with: Date())
@@ -99,6 +104,7 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
         let message = error.localizedDescription
         Task { @MainActor [weak self] in
             self?.errorMessage = message
+            self?.voiceCoaching.endWorkout()
         }
     }
 
@@ -138,10 +144,12 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
 
         let paceSecondsPerKilometer = 1_000 / speedInMetersPerSecond
         currentPaceSecondsPerKilometer = paceSecondsPerKilometer
-        coachingDecision = decisionEngine.addSample(
+        let wasCoachingActive = decisionEngine.isCoachingActive
+        coachingState = decisionEngine.addSample(
             paceSecondsPerKilometer: paceSecondsPerKilometer,
             at: sampleDate
         )
+        voiceCoaching.update(coachingState, activatedNow: !wasCoachingActive && decisionEngine.isCoachingActive)
         paceExpirationTask?.cancel()
 
         let remainingFreshness = max(0, Self.speedFreshnessTimeout - max(0, sampleAge))
@@ -159,13 +167,23 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
         paceExpirationTask?.cancel()
         paceExpirationTask = nil
         currentPaceSecondsPerKilometer = nil
-        decisionEngine.reset()
-        coachingDecision = nil
+        decisionEngine.clearTransientPace()
+        coachingState = decisionEngine.coachingState
+        voiceCoaching.paceUnavailable()
+    }
+
+    private func resetWorkoutState() {
+        clearCurrentPace()
+        decisionEngine.resetWorkout()
+        coachingState = decisionEngine.coachingState
+        latestSpeedSampleDate = nil
+        voiceCoaching.endWorkout()
     }
 
     private func finishWorkout(at endDate: Date) async {
         guard !isFinishingWorkout else { return }
         isFinishingWorkout = true
+        voiceCoaching.endWorkout()
 
         if let workoutBuilder, let workoutSession {
             do {
@@ -179,8 +197,7 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
 
         workoutBuilder = nil
         workoutSession = nil
-        clearCurrentPace()
-        latestSpeedSampleDate = nil
+        resetWorkoutState()
         isFinishingWorkout = false
         endContinuation?.resume()
         endContinuation = nil

@@ -1,11 +1,19 @@
 import Foundation
 
 struct PaceDecisionEngine {
+    enum CoachingState: Equatable {
+        case findingPace
+        case onPace
+        case speedUp
+        case slowDown
+    }
+
     enum Decision: Equatable {
         case tooFast
         case tooSlow
     }
 
+    private static let activationDuration: TimeInterval = 3
     private static let smoothingWindow: TimeInterval = 5
     private static let entryTolerance: Double = 5
     private static let confirmationDuration: TimeInterval = 8
@@ -15,12 +23,15 @@ struct PaceDecisionEngine {
     private let slowerPaceSeconds: Double
     private var samples: [(date: Date, pace: Double)] = []
     private var lastSampleDate: Date?
+    private var activationSince: Date?
     private var pendingDecision: Decision?
     private var pendingSince: Date?
     private var recoverySince: Date?
 
     private(set) var coachingPaceSecondsPerKilometer: Double?
     private(set) var confirmedDecision: Decision?
+    private(set) var isCoachingActive = false
+    private(set) var coachingState: CoachingState = .findingPace
 
     init(fasterPaceSeconds: Double, slowerPaceSeconds: Double) {
         self.fasterPaceSeconds = fasterPaceSeconds
@@ -28,11 +39,17 @@ struct PaceDecisionEngine {
     }
 
     @discardableResult
-    mutating func addSample(paceSecondsPerKilometer: Double, at date: Date) -> Decision? {
-        guard paceSecondsPerKilometer.isFinite,
-              paceSecondsPerKilometer > 0,
-              lastSampleDate.map({ date > $0 }) ?? true else {
-            return confirmedDecision
+    mutating func addSample(paceSecondsPerKilometer: Double, at date: Date) -> CoachingState {
+        guard paceSecondsPerKilometer.isFinite, paceSecondsPerKilometer > 0 else {
+            clearTransientPace()
+            return coachingState
+        }
+        guard lastSampleDate.map({ date > $0 }) ?? true else { return coachingState }
+
+        if !isCoachingActive,
+           let lastSampleDate,
+           date.timeIntervalSince(lastSampleDate) > Self.activationDuration {
+            activationSince = nil
         }
 
         lastSampleDate = date
@@ -48,6 +65,21 @@ struct PaceDecisionEngine {
             coachingPace = sortedPaces[middle]
         }
         coachingPaceSecondsPerKilometer = coachingPace
+
+        if !isCoachingActive {
+            if paceSecondsPerKilometer >= fasterPaceSeconds && paceSecondsPerKilometer <= slowerPaceSeconds {
+                if activationSince == nil { activationSince = date }
+                if let activationSince,
+                   date.timeIntervalSince(activationSince) >= Self.activationDuration {
+                    isCoachingActive = true
+                    self.activationSince = nil
+                    coachingState = .onPace
+                }
+            } else {
+                activationSince = nil
+            }
+            return coachingState
+        }
 
         let candidate: Decision?
         if coachingPace < fasterPaceSeconds - Self.entryTolerance {
@@ -84,16 +116,28 @@ struct PaceDecisionEngine {
             }
         }
 
-        return confirmedDecision
+        switch confirmedDecision {
+        case .tooFast: coachingState = .slowDown
+        case .tooSlow: coachingState = .speedUp
+        case nil: coachingState = .onPace
+        }
+        return coachingState
     }
 
-    mutating func reset() {
+    mutating func clearTransientPace() {
         samples.removeAll()
         lastSampleDate = nil
+        activationSince = nil
         pendingDecision = nil
         pendingSince = nil
         recoverySince = nil
         coachingPaceSecondsPerKilometer = nil
         confirmedDecision = nil
+        coachingState = .findingPace
+    }
+
+    mutating func resetWorkout() {
+        clearTransientPace()
+        isCoachingActive = false
     }
 }
