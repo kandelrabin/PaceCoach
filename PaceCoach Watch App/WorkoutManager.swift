@@ -95,7 +95,10 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
 
             let startDate = Date()
             session.startActivity(with: startDate)
-            if case .pace = target { voiceCoaching.startWorkout() }
+            switch target {
+            case .pace: voiceCoaching.startWorkout(mode: .pace)
+            case .heartRateZone: voiceCoaching.startWorkout(mode: .zone)
+            }
             try await builder.beginCollection(at: startDate)
             #if DEBUG
             if case .heartRateZone = target {
@@ -266,7 +269,12 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
         }
 
         currentHeartRateBPM = bpm
+        let wasCoachingActive = zoneDecisionEngine?.isCoachingActive ?? false
         zoneCoachingState = zoneDecisionEngine?.addSample(bpm: bpm, at: sampleDate) ?? .findingZone
+        voiceCoaching.update(
+            zoneCoachingState,
+            activatedNow: !wasCoachingActive && zoneDecisionEngine?.isCoachingActive == true
+        )
         heartRateExpirationTask?.cancel()
         let remainingFreshness = max(0, Self.heartRateFreshnessTimeout - max(0, sampleAge))
         heartRateExpirationTask = Task { [weak self] in
@@ -284,6 +292,7 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
         currentHeartRateBPM = nil
         zoneDecisionEngine?.heartRateUnavailable()
         zoneCoachingState = .findingZone
+        voiceCoaching.heartRateUnavailable()
     }
 
     private func clearCurrentPace() {
@@ -304,6 +313,7 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
         } else {
             clearCurrentHeartRate()
             zoneDecisionEngine?.resetWorkout()
+            voiceCoaching.endWorkout()
         }
         latestSpeedSampleDate = nil
         latestHeartRateSampleDate = nil
