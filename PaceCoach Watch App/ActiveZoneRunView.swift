@@ -15,37 +15,39 @@ struct ActiveZoneRunView: View {
     var body: some View {
         GeometryReader { geometry in
             let heartRateSize = min(64, max(48, geometry.size.height * 0.34))
-            let cardHeight = min(62, max(52, geometry.size.height * 0.30))
+            let cardHeight = min(68, max(60, geometry.size.height * 0.32))
 
             VStack(spacing: 0) {
-                Text(workoutManager.currentHeartRateBPM.map {
-                    $0.formatted(.number.precision(.fractionLength(0)))
-                } ?? "--")
-                    .font(.system(size: heartRateSize, weight: .bold, design: .rounded))
-                    .monospacedDigit()
-                    .foregroundStyle(PaceTheme.primaryText)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, 2)
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Text(workoutManager.currentHeartRateBPM.map {
+                        $0.formatted(.number.precision(.fractionLength(0)))
+                    } ?? "--")
+                        .font(.system(size: heartRateSize, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(PaceTheme.primaryText)
+                        .minimumScaleFactor(0.75)
 
-                Text("BPM")
-                    .font(.callout.weight(.semibold))
-                    .foregroundStyle(PaceTheme.secondaryText)
+                    Text("BPM")
+                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                        .foregroundStyle(PaceTheme.secondaryText)
+                }
+                .lineLimit(1)
+                .frame(maxWidth: .infinity)
+                .padding(.top, 2)
+                .accessibilityElement(children: .combine)
 
                 Spacer(minLength: 4)
 
-                VStack(spacing: 2) {
-                    Text("ZONE \(target.number)")
-                        .font(.system(.headline, design: .rounded, weight: .bold))
-                    Text("\(target.lowerBPM)–\(target.upperBPM) BPM")
-                        .font(.system(.caption, design: .rounded, weight: .semibold))
-                        .monospacedDigit()
-                }
-                .foregroundStyle(PaceTheme.primaryText)
-                .frame(maxWidth: .infinity)
-                .frame(height: cardHeight)
-                .background(PaceTheme.accent.opacity(0.68), in: RoundedRectangle(cornerRadius: 14))
+                Text(coachingTitle)
+                    .font(.system(size: 22, weight: .bold, design: .rounded))
+                    .foregroundStyle(PaceTheme.primaryText)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.8)
+                    .padding(.horizontal, 8)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: cardHeight)
+                    .background(PaceTheme.accent.opacity(0.68), in: RoundedRectangle(cornerRadius: 14))
 
                 if let errorMessage = workoutManager.errorMessage {
                     Text(errorMessage)
@@ -87,6 +89,15 @@ struct ActiveZoneRunView: View {
         .task {
             await workoutManager.startWorkout()
             startupFinished = true
+        }
+    }
+
+    private var coachingTitle: String {
+        switch workoutManager.zoneCoachingState {
+        case .findingZone: "FINDING ZONE"
+        case .inZone: "IN ZONE"
+        case .increaseEffort: "INCREASE EFFORT"
+        case .reduceEffort: "REDUCE EFFORT"
         }
     }
 }

@@ -13,6 +13,7 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
 
     @Published private(set) var currentPaceSecondsPerKilometer: Double?
     @Published private(set) var currentHeartRateBPM: Double?
+    @Published private(set) var zoneCoachingState: ZoneDecisionEngine.CoachingState = .findingZone
     @Published private(set) var coachingState: PaceDecisionEngine.CoachingState = .findingPace
     @Published private(set) var isStarting = false
     @Published private(set) var errorMessage: String?
@@ -28,6 +29,7 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
     private var paceExpirationTask: Task<Void, Never>?
     private var heartRateExpirationTask: Task<Void, Never>?
     private var decisionEngine: PaceDecisionEngine?
+    private var zoneDecisionEngine: ZoneDecisionEngine?
     let target: WorkoutTarget
     private let voiceCoaching = VoiceCoachingCoordinator()
 
@@ -43,6 +45,7 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
     init(targetZone: TargetHeartRateZone) {
         target = .heartRateZone(targetZone)
         decisionEngine = nil
+        zoneDecisionEngine = ZoneDecisionEngine(target: targetZone)
         super.init()
     }
 
@@ -120,6 +123,7 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
         if case .heartRateZone = target {
             isEndingZoneWorkout = true
             clearCurrentHeartRate()
+            zoneDecisionEngine?.resetWorkout()
         }
         voiceCoaching.endWorkout()
         await withCheckedContinuation { continuation in
@@ -149,6 +153,7 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
             self.voiceCoaching.endWorkout()
             if case .heartRateZone = self.target {
                 self.isEndingZoneWorkout = true
+                self.zoneDecisionEngine?.resetWorkout()
                 #if DEBUG
                 TargetZoneWorkoutLog.write("session failure: \(message)")
                 #endif
@@ -242,6 +247,12 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
         guard latestHeartRateSampleDate.map({ sampleDate > $0 }) ?? true else {
             return
         }
+        // A new callback can race the scheduled expiry after a long gap. Break
+        // decision continuity even if that expiry task has not run yet.
+        if let latestHeartRateSampleDate,
+           sampleDate.timeIntervalSince(latestHeartRateSampleDate) >= Self.heartRateFreshnessTimeout {
+            clearCurrentHeartRate()
+        }
         latestHeartRateSampleDate = sampleDate
 
         let sampleAge = Date().timeIntervalSince(sampleDate)
@@ -255,6 +266,7 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
         }
 
         currentHeartRateBPM = bpm
+        zoneCoachingState = zoneDecisionEngine?.addSample(bpm: bpm, at: sampleDate) ?? .findingZone
         heartRateExpirationTask?.cancel()
         let remainingFreshness = max(0, Self.heartRateFreshnessTimeout - max(0, sampleAge))
         heartRateExpirationTask = Task { [weak self] in
@@ -270,6 +282,8 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
         heartRateExpirationTask?.cancel()
         heartRateExpirationTask = nil
         currentHeartRateBPM = nil
+        zoneDecisionEngine?.heartRateUnavailable()
+        zoneCoachingState = .findingZone
     }
 
     private func clearCurrentPace() {
@@ -289,6 +303,7 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
             voiceCoaching.endWorkout()
         } else {
             clearCurrentHeartRate()
+            zoneDecisionEngine?.resetWorkout()
         }
         latestSpeedSampleDate = nil
         latestHeartRateSampleDate = nil
