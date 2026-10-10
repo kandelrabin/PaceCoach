@@ -1,4 +1,5 @@
 import AVFoundation
+import WatchKit
 
 @MainActor
 final class VoiceCoachingCoordinator {
@@ -42,7 +43,7 @@ final class VoiceCoachingCoordinator {
         if activatedNow {
             cancelReminder()
             currentState = .onPace
-            speak("On pace")
+            speak(for: .onPace)
             return
         }
 
@@ -54,25 +55,38 @@ final class VoiceCoachingCoordinator {
         switch state {
         case .onPace:
             if previousState == .speedUp || previousState == .slowDown {
-                speak("On pace")
+                speak(for: .onPace)
             }
         case .speedUp, .slowDown:
-            speak(instruction(for: state))
+            speak(for: state)
             scheduleReminder(for: state)
         case .findingPace:
             break
         }
     }
 
-    private func instruction(for state: PaceDecisionEngine.CoachingState) -> String {
-        state == .speedUp ? "Speed up" : "Slow down"
-    }
+    private func speak(for state: PaceDecisionEngine.CoachingState) {
+        let phrase: String
+        let haptic: WKHapticType
+        switch state {
+        case .onPace:
+            phrase = "On pace"
+            haptic = .success
+        case .speedUp:
+            phrase = "Speed up"
+            haptic = .retry
+        case .slowDown:
+            phrase = "Slow down"
+            haptic = .failure
+        case .findingPace:
+            return
+        }
 
-    private func speak(_ phrase: String) {
         synthesizer.stopSpeaking(at: .immediate)
         let utterance = AVSpeechUtterance(string: phrase)
         utterance.voice = voice
         synthesizer.speak(utterance)
+        WKInterfaceDevice.current().play(haptic)
     }
 
     private func cancelReminder() {
@@ -91,7 +105,7 @@ final class VoiceCoachingCoordinator {
                   self.reminderGeneration == generation,
                   self.currentState == state else { return }
 
-            self.speak(self.instruction(for: state))
+            self.speak(for: state)
             self.scheduleReminder(for: state)
         }
     }
