@@ -1,7 +1,14 @@
 import SwiftUI
 
 struct ZoneSetupView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @State private var state: LoadState = .loading
+    @State private var loadAttempt: UUID?
+    @State private var authorizationAttempt: UUID?
+    @State private var authorizationMessage: String?
+    @State private var isRequestingAccess = false
+
+    private static let setupWaitSeconds = 30
 
     private enum LoadState {
         case loading
@@ -12,67 +19,33 @@ struct ZoneSetupView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Target Zone")
-                    .font(.system(.headline, design: .rounded, weight: .bold))
-                    .foregroundStyle(PaceTheme.primaryText)
-
                 switch state {
                 case .loading:
-                    ProgressView("Loading HR data…")
+                    ProgressView("Loading heart rate…")
                 case .failed(let message):
-                    Text("Could not load HR data")
-                        .foregroundStyle(PaceTheme.primaryText)
-                    Text(message)
-                        .font(.caption2)
-                        .foregroundStyle(PaceTheme.secondaryText)
-                    Button("Retry") { Task { await loadProfile() } }
+                    unavailable(message)
                 case .loaded(let profile):
-                    Text("HealthKit diagnostic · Workouts \(HeartRateProfileService.workoutHistoryDays)d · Resting \(HeartRateProfileService.restingHistoryDays)d")
-                        .font(.caption2)
-                        .foregroundStyle(PaceTheme.secondaryText)
-
-                    metric("Resting HR query", value: queryStatus(profile.restingStatus))
-                    metric("Representative resting HR", value: profile.representativeRestingHR.map { bpm($0.bpm) } ?? "Unavailable")
-                    if let resting = profile.representativeRestingHR {
-                        Text("Median of \(resting.dayCount) daily values from \(resting.sampleCount) samples\(resting.isSparse ? " · Sparse data" : "")")
-                            .font(.caption2)
-                            .foregroundStyle(PaceTheme.secondaryText)
-                    }
-                    metric("Recent resting HR", value: profile.restingReadings.first.map { bpm($0.bpm) } ?? "Unavailable")
-                    ForEach(profile.restingReadings.prefix(3), id: \.id) { reading in
-                        Text("\(reading.date.formatted(date: .abbreviated, time: .omitted)): \(bpm(reading.bpm))")
-                            .font(.caption2)
-                            .foregroundStyle(PaceTheme.secondaryText)
-                    }
-                    metric("Running workout query", value: queryStatus(profile.runningWorkoutStatus))
-                    metric("Running workouts found", value: "\(profile.runningWorkouts.count)")
-                    metric("Workout HR query", value: queryStatus(profile.workoutHeartRateStatus))
-                    metric("Workouts with HR", value: "\(profile.workoutsWithHeartRate)")
-                    metric("Estimated max HR", value: profile.estimatedMaxHR.map { bpm($0.bpm) } ?? "Unavailable")
-                    if let estimate = profile.estimatedMaxHR {
-                        Text("\(estimate.workoutDate.formatted(date: .abbreviated, time: .omitted)) · \(estimate.workoutSource)")
-                            .font(.caption2)
-                            .foregroundStyle(PaceTheme.secondaryText)
-                        Text(peakEvidence(estimate.peak))
-                            .font(.caption2)
-                            .foregroundStyle(PaceTheme.secondaryText)
+                    if let resting = profile.representativeRestingHR,
+                       let maximum = profile.estimatedMaxHR {
+                        if resting.isSparse {
+                            unavailable("Need resting HR values from at least 3 days in the last 30 days.")
+                        } else if let zones = try? HeartRateZoneCalculator.zones(
+                            restingHR: resting.bpm,
+                            estimatedMaxHR: maximum.bpm
+                        ) {
+                            ForEach(zones) { zone in
+                                NavigationLink {
+                                    ZoneDetailView(target: zone)
+                                } label: {
+                                    zoneRow(zone)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        } else {
+                            unavailable("The available heart-rate profile cannot form five BPM zones.")
+                        }
                     } else {
-                        Text("No sustained peak found in the queried workouts")
-                            .font(.caption2)
-                            .foregroundStyle(PaceTheme.secondaryText)
-                    }
-                    metric("Highest observed HR", value: profile.highestObservedWorkoutBPM.map(bpm) ?? "Unavailable")
-                    if profile.workoutHeartRateQueryIssues > 0 {
-                        metric("Workout HR query issues", value: "\(profile.workoutHeartRateQueryIssues)")
-                    }
-                    metric("HR sample objects", value: "\(profile.heartRateSampleObjects)")
-                    metric("Series objects", value: "\(profile.heartRateSeriesObjects)")
-                    metric("Stored HR quantities", value: "\(profile.storedHeartRateQuantities)")
-
-                    ForEach(profile.runningWorkouts.prefix(3), id: \.id) { workout in
-                        Text("\(workout.date.formatted(date: .abbreviated, time: .omitted)) · \(workout.source): \(workout.highestObservedBPM.map(bpm) ?? "No HR")")
-                            .font(.caption2)
-                            .foregroundStyle(PaceTheme.secondaryText)
+                        unavailable(missingDataMessage(for: profile))
                     }
                 }
             }
@@ -82,55 +55,237 @@ struct ZoneSetupView: View {
         }
         .background(PaceTheme.background)
         .task { await loadProfile() }
+        .onDisappear {
+            // The system request may outlive this view. Do not reload an
+            // offscreen setup view when its permission sheet later completes.
+            authorizationAttempt = nil
+            isRequestingAccess = false
+        }
     }
 
-    private func metric(_ title: String, value: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title)
+    private func zoneRow(_ zone: TargetHeartRateZone) -> some View {
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Zone \(zone.number)")
+                    .font(.system(.body, design: .rounded, weight: .semibold))
+                    .foregroundStyle(PaceTheme.primaryText)
+                Text(zoneDescription(zone.number))
+                    .font(.caption2)
+                    .foregroundStyle(PaceTheme.secondaryText)
+            }
+            Spacer(minLength: 2)
+            Image(systemName: "chevron.right")
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(PaceTheme.accent)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(PaceTheme.accent.opacity(0.16), in: RoundedRectangle(cornerRadius: 12))
+        .contentShape(RoundedRectangle(cornerRadius: 12))
+        .accessibilityElement(children: .combine)
+    }
+
+    private func unavailable(_ message: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Zones unavailable")
+                .font(.body.weight(.semibold))
+                .foregroundStyle(PaceTheme.primaryText)
+            Text(message)
                 .font(.caption2)
                 .foregroundStyle(PaceTheme.secondaryText)
-            Text(value)
-                .font(.system(.body, design: .rounded, weight: .semibold))
-                .foregroundStyle(PaceTheme.primaryText)
-                .fixedSize(horizontal: false, vertical: true)
+            Button("Retry") { Task { await loadProfile() } }
+                .tint(PaceTheme.accent)
+            Text("This profile uses heart rate, resting heart rate and running workout history. Missing data may also reflect Health access settings.")
+                .font(.caption2)
+                .foregroundStyle(PaceTheme.secondaryText)
+            Button("Request Health Access") {
+                Task { await requestHealthAccess() }
+            }
+            .tint(PaceTheme.accent)
+            .disabled(isRequestingAccess || scenePhase != .active)
+            if isRequestingAccess {
+                ProgressView("Waiting for HealthKit…")
+            }
+            if let authorizationMessage {
+                Text(authorizationMessage)
+                    .font(.caption2)
+                    .foregroundStyle(PaceTheme.secondaryText)
+            }
         }
     }
 
-    private func queryStatus(_ status: HeartRateProfile.QueryStatus) -> String {
-        switch status {
-        case .loaded: "Loaded"
-        case .noData: "No data"
-        case .error(let message): "Error: \(message)"
-        case .notRun(let reason): "Not run: \(reason)"
+    private func requestHealthAccess() async {
+        guard scenePhase == .active, !isRequestingAccess else { return }
+        let attempt = UUID()
+        authorizationAttempt = attempt
+        authorizationMessage = nil
+        isRequestingAccess = true
+
+        // This bounds only the UI wait, not HealthKit's permission sheet. A
+        // normal interaction may finish later; the coordinator retains the
+        // native request so a timeout never allows overlapping permission sheets.
+        let timeoutTask = Task { @MainActor in
+            do {
+                try await Task.sleep(for: .seconds(Self.setupWaitSeconds))
+            } catch { return }
+            guard authorizationAttempt == attempt else { return }
+            authorizationAttempt = nil
+            isRequestingAccess = false
+            authorizationMessage = "HealthKit has not finished. Complete the permission sheet if shown, or check Health permissions. Retry can load available data."
+            log("profile authorization UI wait ended after \(Self.setupWaitSeconds)s; native request may still be pending")
+        }
+        defer { timeoutTask.cancel() }
+
+        do {
+            try await HealthKitAuthorization.ensureAuthorized(for: .targetZoneProfile)
+            guard authorizationAttempt == attempt else {
+                return
+            }
+            authorizationAttempt = nil
+            isRequestingAccess = false
+            await loadProfile()
+        } catch {
+            guard authorizationAttempt == attempt else { return }
+            authorizationAttempt = nil
+            isRequestingAccess = false
+            authorizationMessage = error.localizedDescription
+            log("profile authorization UI error: \(error.localizedDescription)")
         }
     }
 
-    private func bpm(_ value: Double) -> String {
-        "\(bpmValue(value)) BPM"
-    }
-
-    private func bpmValue(_ value: Double) -> String {
-        value.formatted(.number.precision(.fractionLength(0...1)))
-    }
-
-    private func peakEvidence(_ peak: HeartRateProfileCalculator.CrediblePeak) -> String {
-        switch peak.evidence {
-        case .threeReadings:
-            "\(peak.supportingReadings) readings, \(bpmValue(peak.lowestSupportingBPM))–\(bpm(peak.highestSupportingBPM)), over \(Int(peak.duration.rounded()))s"
-        case .continuousSeries:
-            "Continuous series value for \(Int(peak.duration.rounded()))s"
+    private func missingDataMessage(for profile: HeartRateProfile) -> String {
+        if profile.representativeRestingHR == nil {
+            if case .error(let message) = profile.restingStatus {
+                return "Could not read resting HR: \(message)"
+            }
+            return "No resting HR values are available from the last 30 days."
         }
+        if case .error(let message) = profile.runningWorkoutStatus {
+            return "Could not read running workouts: \(message)"
+        }
+        if case .error(let message) = profile.workoutHeartRateStatus {
+            return "Could not read workout HR: \(message)"
+        }
+        if profile.workoutHeartRateQueryIssues > 0 {
+            return "No sustained running HR peak was found; some workout HR data could not be read."
+        }
+        return "No sustained running HR peak is available from the last 90 days."
     }
 
     private func loadProfile() async {
+        // Retrying data never initiates or waits for an authorization request.
+        authorizationAttempt = nil
+        isRequestingAccess = false
+        authorizationMessage = nil
+        let attempt = UUID()
+        loadAttempt = attempt
         state = .loading
+        let timeoutTask = Task { @MainActor in
+            do {
+                try await Task.sleep(for: .seconds(Self.setupWaitSeconds))
+            } catch {
+                return
+            }
+            guard loadAttempt == attempt, case .loading = state else { return }
+            state = .failed("Heart-rate profile loading timed out. Please retry.")
+            log("UI state -> error: profile request timed out after \(Self.setupWaitSeconds)s")
+        }
+        defer { timeoutTask.cancel() }
+
         do {
             let profile = try await HeartRateProfileService().load()
-            guard !Task.isCancelled else { return }
+            guard loadAttempt == attempt else {
+                return
+            }
+            guard !Task.isCancelled else {
+                state = .failed("Heart-rate profile loading was interrupted. Please retry.")
+                return
+            }
+            guard case .loading = state else {
+                return
+            }
             state = .loaded(profile)
+            log("UI state -> loaded; resting available=\(profile.representativeRestingHR != nil), estimated max available=\(profile.estimatedMaxHR != nil)")
         } catch {
-            guard !Task.isCancelled else { return }
-            state = .failed(error.localizedDescription)
+            guard loadAttempt == attempt else {
+                return
+            }
+            guard case .loading = state else {
+                return
+            }
+            let message = Task.isCancelled
+                ? "Heart-rate profile loading was interrupted. Please retry."
+                : error.localizedDescription
+            state = .failed(message)
+            log("UI state -> error: \(message)")
+        }
+    }
+
+    private func log(_ message: @autoclosure () -> String) {
+        #if DEBUG
+        print("[HeartRateProfile] \(message())")
+        #endif
+    }
+}
+
+private func zoneDescription(_ number: Int) -> String {
+    switch number {
+    case 1: "Recovery"
+    case 2: "Endurance"
+    case 3: "Tempo"
+    case 4: "Threshold"
+    case 5: "Anaerobic"
+    default: ""
+    }
+}
+
+private struct ZoneDetailView: View {
+    let target: TargetHeartRateZone
+    @State private var frozenTarget: TargetHeartRateZone?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Spacer(minLength: 4)
+
+            Text("Zone \(target.number)")
+                .font(.system(size: 25, weight: .bold, design: .rounded))
+                .foregroundStyle(PaceTheme.primaryText)
+            Text(zoneDescription(target.number))
+                .font(.caption)
+                .foregroundStyle(PaceTheme.secondaryText)
+
+            Spacer(minLength: 4)
+
+            Text("\(target.lowerBPM)–\(target.upperBPM)")
+                .font(.system(size: 32, weight: .bold, design: .rounded))
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .foregroundStyle(PaceTheme.primaryText)
+            Text("BPM")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(PaceTheme.accent)
+
+            Spacer(minLength: 4)
+
+            Button {
+                // Capture the immutable calculated bounds for this run.
+                frozenTarget = target
+            } label: {
+                Label("Start Run", systemImage: "figure.run")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(PaceTheme.accent)
+        }
+        .padding(.horizontal, 8)
+        .padding(.bottom, 10)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(PaceTheme.background)
+        .navigationDestination(item: $frozenTarget) { frozen in
+            ActiveZoneRunView(target: frozen)
         }
     }
 }

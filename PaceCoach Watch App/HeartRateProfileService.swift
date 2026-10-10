@@ -87,25 +87,21 @@ final class HeartRateProfileService {
     static let workoutHistoryDays = 90
     static let restingHistoryDays = 30
 
-    private let healthStore = HKHealthStore()
+    private let healthStore = HealthKitAuthorization.healthStore
     private let bpmUnit = HKUnit.count().unitDivided(by: .minute())
 
     func load() async throws -> HeartRateProfile {
         guard HKHealthStore.isHealthDataAvailable(),
               let heartRateType = HKObjectType.quantityType(forIdentifier: .heartRate),
               let restingHeartRateType = HKObjectType.quantityType(forIdentifier: .restingHeartRate) else {
+            log("profile acquisition unavailable: HealthKit or HR types missing")
             return unavailableProfile("Health data is unavailable on this device.")
         }
 
-        do {
-            try await healthStore.requestAuthorization(
-                toShare: [],
-                read: [heartRateType, restingHeartRateType, HKObjectType.workoutType()]
-            )
-        } catch {
-            logQueryError("HealthKit authorization", error: error)
-            return unavailableProfile("HealthKit authorization failed: \(error.localizedDescription)")
-        }
+        // Authorization is a separate, user-initiated setup action. Refreshing
+        // must not wait for a permission sheet: HealthKit filters these queries
+        // to available data (which can include our own saved workouts). Neither
+        // returned samples nor empty results establish the user's read permissions.
 
         let now = Date()
         let restingStart = now.addingTimeInterval(-TimeInterval(Self.restingHistoryDays * 24 * 60 * 60))
@@ -124,14 +120,12 @@ final class HeartRateProfileService {
                 limit: HKObjectQueryNoLimit,
                 sortedBy: newestFirst
             )
-            log("Resting-HR samples returned: \(restingSamples.count)")
             restingReadings = restingSamples.compactMap { sample -> HeartRateProfile.RestingReading? in
                 guard let sample = sample as? HKQuantitySample else { return nil }
                 return .init(id: sample.uuid, date: sample.endDate, bpm: sample.quantity.doubleValue(for: bpmUnit))
             }
             restingStatus = restingReadings.isEmpty ? .noData : .loaded
         } catch {
-            log("Resting-HR samples returned: 0 (query failed)")
             logQueryError("resting HR HKSampleQuery", error: error)
             restingStatus = queryStatus(for: error)
         }
@@ -151,9 +145,7 @@ final class HeartRateProfileService {
                 sortedBy: newestFirst
             )
         } catch {
-            log("Running workouts returned: 0 (query failed)")
             logQueryError("running workout HKSampleQuery", error: error)
-            log("Workouts with associated HR: 0 (workout query failed)")
             return HeartRateProfile(
                 restingReadings: restingReadings,
                 runningWorkouts: [],
@@ -165,12 +157,6 @@ final class HeartRateProfileService {
         }
 
         let workouts = workoutSamples.compactMap { $0 as? HKWorkout }
-        log("Running workouts returned: \(workouts.count)")
-        if let newest = workouts.map(\.startDate).max(),
-           let oldest = workouts.map(\.startDate).min() {
-            let formatter = ISO8601DateFormatter()
-            log("Running workout dates: newest \(formatter.string(from: newest)); oldest \(formatter.string(from: oldest))")
-        }
 
         var runningWorkouts: [HeartRateProfile.RunningWorkout] = []
         var workoutHeartRateQueryIssues = 0
@@ -205,7 +191,6 @@ final class HeartRateProfileService {
                                 seriesReadFailed = true
                                 workoutHeartRateQueryIssues += 1
                                 firstHeartRateError = firstHeartRateError ?? error.localizedDescription
-                                logQueryError("workout HR HKQuantitySeriesSampleQuery, sample \(sample.uuid)", error: error)
                             }
                         } else {
                             readings.append(.init(
@@ -228,7 +213,6 @@ final class HeartRateProfileService {
                     } catch {
                         workoutHeartRateQueryIssues += 1
                         firstHeartRateError = firstHeartRateError ?? error.localizedDescription
-                        logQueryError("workout HR HKStatisticsQuery(.discreteMax), workout \(workout.uuid)", error: error)
                     }
                 }
             } catch {
@@ -236,7 +220,6 @@ final class HeartRateProfileService {
                     workoutHeartRateQueryIssues += 1
                     firstHeartRateError = firstHeartRateError ?? error.localizedDescription
                 }
-                logQueryError("associated workout HR HKSampleQuery, workout \(workout.uuid)", error: error)
             }
 
             try Task.checkCancellation()
@@ -254,7 +237,6 @@ final class HeartRateProfileService {
         }
 
         let workoutsWithHeartRate = runningWorkouts.filter { $0.heartRateSampleObjects > 0 }.count
-        log("Workouts with associated HR: \(workoutsWithHeartRate)")
         let workoutHeartRateStatus: HeartRateProfile.QueryStatus
         if workoutsWithHeartRate > 0 {
             workoutHeartRateStatus = .loaded
@@ -264,6 +246,10 @@ final class HeartRateProfileService {
             workoutHeartRateStatus = .noData
         }
 
+        if let firstHeartRateError {
+            log("workout HR queries: \(workoutHeartRateQueryIssues) issues; first error: \(firstHeartRateError)")
+        }
+        log("profile acquisition completed; resting samples=\(restingReadings.count); workouts=\(runningWorkouts.count); workouts with HR=\(workoutsWithHeartRate); query issues=\(workoutHeartRateQueryIssues)")
         return HeartRateProfile(
             restingReadings: restingReadings,
             runningWorkouts: runningWorkouts,
@@ -409,9 +395,9 @@ final class HeartRateProfileService {
         log("\(query) returned \(details.domain) code \(details.code): \(details.localizedDescription)")
     }
 
-    private func log(_ message: String) {
+    private func log(_ message: @autoclosure () -> String) {
         #if DEBUG
-        print("[HeartRateProfile] \(message)")
+        print("[HeartRateProfile] \(message())")
         #endif
     }
 }
