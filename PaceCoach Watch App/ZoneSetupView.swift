@@ -32,6 +32,12 @@ struct ZoneSetupView: View {
                         .foregroundStyle(PaceTheme.secondaryText)
 
                     metric("Resting HR query", value: queryStatus(profile.restingStatus))
+                    metric("Representative resting HR", value: profile.representativeRestingHR.map { bpm($0.bpm) } ?? "Unavailable")
+                    if let resting = profile.representativeRestingHR {
+                        Text("Median of \(resting.dayCount) daily values from \(resting.sampleCount) samples\(resting.isSparse ? " · Sparse data" : "")")
+                            .font(.caption2)
+                            .foregroundStyle(PaceTheme.secondaryText)
+                    }
                     metric("Recent resting HR", value: profile.restingReadings.first.map { bpm($0.bpm) } ?? "Unavailable")
                     ForEach(profile.restingReadings.prefix(3), id: \.id) { reading in
                         Text("\(reading.date.formatted(date: .abbreviated, time: .omitted)): \(bpm(reading.bpm))")
@@ -42,6 +48,19 @@ struct ZoneSetupView: View {
                     metric("Running workouts found", value: "\(profile.runningWorkouts.count)")
                     metric("Workout HR query", value: queryStatus(profile.workoutHeartRateStatus))
                     metric("Workouts with HR", value: "\(profile.workoutsWithHeartRate)")
+                    metric("Estimated max HR", value: profile.estimatedMaxHR.map { bpm($0.bpm) } ?? "Unavailable")
+                    if let estimate = profile.estimatedMaxHR {
+                        Text("\(estimate.workoutDate.formatted(date: .abbreviated, time: .omitted)) · \(estimate.workoutSource)")
+                            .font(.caption2)
+                            .foregroundStyle(PaceTheme.secondaryText)
+                        Text(peakEvidence(estimate.peak))
+                            .font(.caption2)
+                            .foregroundStyle(PaceTheme.secondaryText)
+                    } else {
+                        Text("No sustained peak found in the queried workouts")
+                            .font(.caption2)
+                            .foregroundStyle(PaceTheme.secondaryText)
+                    }
                     metric("Highest observed HR", value: profile.highestObservedWorkoutBPM.map(bpm) ?? "Unavailable")
                     if profile.workoutHeartRateQueryIssues > 0 {
                         metric("Workout HR query issues", value: "\(profile.workoutHeartRateQueryIssues)")
@@ -87,7 +106,20 @@ struct ZoneSetupView: View {
     }
 
     private func bpm(_ value: Double) -> String {
-        "\(Int(value.rounded())) BPM"
+        "\(bpmValue(value)) BPM"
+    }
+
+    private func bpmValue(_ value: Double) -> String {
+        value.formatted(.number.precision(.fractionLength(0...1)))
+    }
+
+    private func peakEvidence(_ peak: HeartRateProfileCalculator.CrediblePeak) -> String {
+        switch peak.evidence {
+        case .threeReadings:
+            "\(peak.supportingReadings) readings, \(bpmValue(peak.lowestSupportingBPM))–\(bpm(peak.highestSupportingBPM)), over \(Int(peak.duration.rounded()))s"
+        case .continuousSeries:
+            "Continuous series value for \(Int(peak.duration.rounded()))s"
+        }
     }
 
     private func loadProfile() async {
