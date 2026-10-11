@@ -33,18 +33,20 @@ enum HealthKitAuthorization {
             share = []
             read = [heartRate, restingHeartRate, HKObjectType.workoutType()]
         case .targetPaceWorkout:
-            guard let speed = HKObjectType.quantityType(forIdentifier: .runningSpeed) else {
+            guard let speed = HKObjectType.quantityType(forIdentifier: .runningSpeed),
+                  let distance = HKObjectType.quantityType(forIdentifier: .distanceWalkingRunning) else {
                 throw AuthorizationError.healthDataUnavailable
             }
             share = [HKObjectType.workoutType()]
-            read = [speed]
+            read = [speed, distance]
         case .targetZoneWorkout:
             guard let speed = HKObjectType.quantityType(forIdentifier: .runningSpeed),
-                  let heartRate = HKObjectType.quantityType(forIdentifier: .heartRate) else {
+                  let heartRate = HKObjectType.quantityType(forIdentifier: .heartRate),
+                  let distance = HKObjectType.quantityType(forIdentifier: .distanceWalkingRunning) else {
                 throw AuthorizationError.healthDataUnavailable
             }
             share = [HKObjectType.workoutType()]
-            read = [speed, heartRate]
+            read = [speed, heartRate, distance]
         }
 
         let status: HKAuthorizationRequestStatus
