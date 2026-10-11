@@ -1,7 +1,7 @@
 import Foundation
 
 // Run with:
-// swiftc 'PaceCoach Watch App/HeartRateZoneCalculator.swift' \
+// swiftc 'PaceCoach Watch App/Features/HeartRate/HeartRateZoneCalculator.swift' \
 //   Tests/HeartRateZoneCalculatorChecks.swift -o /tmp/zone-checks && /tmp/zone-checks
 @main
 struct HeartRateZoneCalculatorChecks {

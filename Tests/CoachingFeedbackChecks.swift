@@ -1,7 +1,7 @@
 import Foundation
 
 // Run with:
-// swiftc 'PaceCoach Watch App/VoiceCoachingCoordinator.swift' \
+// swiftc 'PaceCoach Watch App/Coaching/VoiceCoachingCoordinator.swift' \
 //   Tests/CoachingFeedbackChecks.swift -o /tmp/coaching-feedback-checks \
 //   && /tmp/coaching-feedback-checks
 @main
