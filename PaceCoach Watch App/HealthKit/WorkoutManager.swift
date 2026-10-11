@@ -24,6 +24,8 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
     private let healthStore = HealthKitAuthorization.healthStore
     private var workoutSession: HKWorkoutSession?
     private var workoutBuilder: HKLiveWorkoutBuilder?
+    private var routeRecorder: WorkoutRouteRecorder?
+    private var workoutEndDate: Date?
     private var endContinuation: CheckedContinuation<Void, Never>?
     private var isFinishingWorkout = false
     private var isEndingZoneWorkout = false
@@ -85,6 +87,15 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
             } else {
                 try await HealthKitAuthorization.ensureAuthorized(for: .targetPaceWorkout)
             }
+            // Route permission is independent of the workout permission. An
+            // unavailable route must never prevent HealthKit recording.
+            var routeAuthorized = false
+            do {
+                try await HealthKitAuthorization.ensureAuthorized(for: .workoutRoute)
+                routeAuthorized = healthStore.authorizationStatus(for: HKSeriesType.workoutRoute()) == .sharingAuthorized
+            } catch {
+                // Continue recording the workout without a route.
+            }
             let configuration = HKWorkoutConfiguration()
             configuration.activityType = .running
             configuration.locationType = .outdoor
@@ -106,12 +117,18 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
             workoutBuilder = builder
 
             let startDate = Date()
+            if routeAuthorized {
+                if let routeBuilder = builder.seriesBuilder(for: HKSeriesType.workoutRoute()) as? HKWorkoutRouteBuilder {
+                    routeRecorder = WorkoutRouteRecorder(routeBuilder: routeBuilder, startDate: startDate)
+                }
+            }
             session.startActivity(with: startDate)
             switch target {
             case .pace: voiceCoaching.startWorkout(mode: .pace)
             case .heartRateZone: voiceCoaching.startWorkout(mode: .zone)
             }
             try await builder.beginCollection(at: startDate)
+            routeRecorder?.start()
             // HealthKit requires collection to begin before metadata is added.
             // An identity failure must not discard an otherwise valid workout.
             do {
@@ -130,12 +147,15 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
             workoutSession?.end()
             workoutBuilder = nil
             workoutSession = nil
+            routeRecorder = nil
+            workoutEndDate = nil
             errorMessage = error.localizedDescription
         }
     }
 
     func endWorkout() async {
         guard let workoutSession else { return }
+        guard endContinuation == nil else { return }
 
         if case .heartRateZone = target {
             isEndingZoneWorkout = true
@@ -143,9 +163,17 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
             zoneDecisionEngine?.resetWorkout()
         }
         voiceCoaching.endWorkout()
+        let endDate = workoutEndDate ?? Date()
+        workoutEndDate = endDate
         await withCheckedContinuation { continuation in
             endContinuation = continuation
-            workoutSession.stopActivity(with: Date())
+            Task { [self] in
+                await routeRecorder?.stopAndDrain(at: endDate)
+                // An external session stop may have started finalization while
+                // the route was draining. Its delegate owns the save in that case.
+                guard self.workoutSession === workoutSession, !isFinishingWorkout else { return }
+                workoutSession.stopActivity(with: endDate)
+            }
         }
     }
 
@@ -338,10 +366,13 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
         guard !isFinishingWorkout else { return }
         isFinishingWorkout = true
         voiceCoaching.endWorkout()
+        let finalEndDate = workoutEndDate ?? endDate
+        workoutEndDate = finalEndDate
+        await routeRecorder?.stopAndDrain(at: finalEndDate)
 
         if let workoutBuilder, let workoutSession {
             do {
-                try await workoutBuilder.endCollection(at: endDate)
+                try await workoutBuilder.endCollection(at: finalEndDate)
                 completedWorkout = try await workoutBuilder.finishWorkout()
             } catch {
                 errorMessage = error.localizedDescription
@@ -356,6 +387,8 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
 
         workoutBuilder = nil
         workoutSession = nil
+        routeRecorder = nil
+        workoutEndDate = nil
         resetWorkoutState()
         isFinishingWorkout = false
         endContinuation?.resume()

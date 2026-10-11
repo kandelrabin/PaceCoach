@@ -6,6 +6,7 @@ enum HealthKitAuthorization {
         case targetPaceWorkout
         case targetZoneProfile
         case targetZoneWorkout
+        case workoutRoute
     }
 
     static let healthStore = HKHealthStore()
@@ -25,6 +26,12 @@ enum HealthKitAuthorization {
         let share: Set<HKSampleType>
         let read: Set<HKObjectType>
         switch scope {
+        case .workoutRoute:
+            let route = HKSeriesType.workoutRoute()
+            // HealthKit requires workout authorization alongside route
+            // authorization for both sharing and reading.
+            share = [HKObjectType.workoutType(), route]
+            read = [HKObjectType.workoutType(), route]
         case .targetZoneProfile:
             guard let heartRate = HKObjectType.quantityType(forIdentifier: .heartRate),
                   let restingHeartRate = HKObjectType.quantityType(forIdentifier: .restingHeartRate) else {
@@ -108,6 +115,8 @@ enum HealthKitAuthorization {
         case .targetZoneWorkout:
             print("[TargetZoneWorkout] workout authorization \(message())")
         case .targetPaceWorkout:
+            break
+        case .workoutRoute:
             break
         }
         #endif
