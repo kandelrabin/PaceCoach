@@ -5,6 +5,7 @@ struct ActiveZoneRunView: View {
     @Environment(\.dismiss) private var dismiss
     @StateObject private var workoutManager: WorkoutManager
     @State private var isEnding = false
+    @State private var startupRequested = false
     @State private var startupFinished = false
 
     init(target: TargetHeartRateZone) {
@@ -56,7 +57,7 @@ struct ActiveZoneRunView: View {
                         .multilineTextAlignment(.center)
                         .lineLimit(2)
                         .padding(.top, 4)
-                } else if workoutManager.isStarting {
+                } else if !startupFinished || workoutManager.isStarting {
                     Text("Starting workout…")
                         .font(.caption2)
                         .foregroundStyle(PaceTheme.secondaryText)
@@ -72,7 +73,8 @@ struct ActiveZoneRunView: View {
                         dismiss()
                     }
                 } label: {
-                    Label("End Run", systemImage: "stop.fill")
+                    Label(workoutManager.errorMessage == nil ? "End Run" : "Close",
+                          systemImage: "stop.fill")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered)
@@ -87,6 +89,8 @@ struct ActiveZoneRunView: View {
         .navigationBarBackButtonHidden()
         .toolbar(.hidden, for: .navigationBar)
         .task {
+            guard !startupRequested else { return }
+            startupRequested = true
             await workoutManager.startWorkout()
             startupFinished = true
         }

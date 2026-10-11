@@ -91,16 +91,15 @@ import WatchKit
 
 @MainActor
 final class VoiceCoachingCoordinator {
-    private let synthesizer = AVSpeechSynthesizer()
-    private let voice = AVSpeechSynthesisVoice(identifier: "com.apple.voice.premium.en-GB.Malcolm")
-        ?? AVSpeechSynthesisVoice(language: "en-GB")
+    private var synthesizer: AVSpeechSynthesizer?
+    private var voice: AVSpeechSynthesisVoice?
     private let clock = ContinuousClock()
     private var feedback = CoachingFeedbackPolicy()
     private var reminderTask: Task<Void, Never>?
     private var reminderGeneration = 0
 
-    init() {
-        synthesizer.usesApplicationAudioSession = false
+    func prewarmAudio() {
+        _ = preparedSynthesizer()
     }
 
     func startWorkout(mode: CoachingFeedbackMode) {
@@ -111,7 +110,7 @@ final class VoiceCoachingCoordinator {
     func endWorkout() {
         cancelReminder()
         feedback.endWorkout()
-        synthesizer.stopSpeaking(at: .immediate)
+        synthesizer?.stopSpeaking(at: .immediate)
     }
 
     func paceUnavailable() { feedbackUnavailable() }
@@ -120,7 +119,7 @@ final class VoiceCoachingCoordinator {
     private func feedbackUnavailable() {
         cancelReminder()
         feedback.unavailable()
-        synthesizer.stopSpeaking(at: .immediate)
+        synthesizer?.stopSpeaking(at: .immediate)
     }
 
     func update(_ state: PaceDecisionEngine.CoachingState, activatedNow: Bool) {
@@ -158,6 +157,7 @@ final class VoiceCoachingCoordinator {
 
     private func speak(_ event: CoachingFeedbackEvent) {
         guard feedback.mode != nil else { return }
+        let synthesizer = preparedSynthesizer()
         synthesizer.stopSpeaking(at: .immediate)
         let utterance = AVSpeechUtterance(string: event.phrase)
         utterance.voice = voice
@@ -169,6 +169,16 @@ final class VoiceCoachingCoordinator {
         case .failure: haptic = .failure
         }
         WKInterfaceDevice.current().play(haptic)
+    }
+
+    private func preparedSynthesizer() -> AVSpeechSynthesizer {
+        if let synthesizer { return synthesizer }
+        let synthesizer = AVSpeechSynthesizer()
+        synthesizer.usesApplicationAudioSession = false
+        voice = AVSpeechSynthesisVoice(identifier: "com.apple.voice.premium.en-GB.Malcolm")
+            ?? AVSpeechSynthesisVoice(language: "en-GB")
+        self.synthesizer = synthesizer
+        return synthesizer
     }
 
     private func cancelReminder() {

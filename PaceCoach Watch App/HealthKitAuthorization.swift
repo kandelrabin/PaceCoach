@@ -54,14 +54,12 @@ enum HealthKitAuthorization {
             log("status check failed; error=\(error)", scope: scope)
             throw error
         }
-        log("status check completed; status=\(statusName(status))", scope: scope)
-
         switch status {
         case .unnecessary:
             // The user has already made a choice for every type. HealthKit does
             // not reveal whether read access was granted. Queries return only
             // available data and cannot distinguish denial from missing data.
-            log("request skipped (already decided)", scope: scope)
+            break
         case .shouldRequest:
             // A UI timeout cannot cancel HealthKit's native request. Retain it
             // until native completion; don't enqueue another sheet or wait for
@@ -72,10 +70,8 @@ enum HealthKitAuthorization {
             }
             let id = UUID()
             let task = Task {
-                log("request start", scope: scope)
                 do {
                     try await healthStore.requestAuthorization(toShare: share, read: read)
-                    log("request completed; read access remains private", scope: scope)
                 } catch {
                     log("request failed; error=\(error)", scope: scope)
                     throw error
@@ -90,15 +86,6 @@ enum HealthKitAuthorization {
             throw AuthorizationError.unknownRequestStatus
         @unknown default:
             throw AuthorizationError.unknownRequestStatus
-        }
-    }
-
-    private static func statusName(_ status: HKAuthorizationRequestStatus) -> String {
-        switch status {
-        case .unnecessary: "unnecessary"
-        case .shouldRequest: "shouldRequest"
-        case .unknown: "unknown"
-        @unknown default: "unknown(\(status.rawValue))"
         }
     }
 

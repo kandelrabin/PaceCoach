@@ -242,7 +242,6 @@ private func zoneDescription(_ number: Int) -> String {
 
 private struct ZoneDetailView: View {
     let target: TargetHeartRateZone
-    @State private var frozenTarget: TargetHeartRateZone?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -269,9 +268,8 @@ private struct ZoneDetailView: View {
 
             Spacer(minLength: 4)
 
-            Button {
-                // Capture the immutable calculated bounds for this run.
-                frozenTarget = target
+            NavigationLink {
+                ActiveZoneRunView(target: target)
             } label: {
                 Label("Start Run", systemImage: "figure.run")
                     .font(.headline)
@@ -284,8 +282,5 @@ private struct ZoneDetailView: View {
         .padding(.bottom, 10)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(PaceTheme.background)
-        .navigationDestination(item: $frozenTarget) { frozen in
-            ActiveZoneRunView(target: frozen)
-        }
     }
 }

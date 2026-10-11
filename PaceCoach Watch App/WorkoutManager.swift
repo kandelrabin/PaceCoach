@@ -40,6 +40,8 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
             slowerPaceSeconds: slowerPaceSeconds
         )
         super.init()
+        // Keep Target Pace's previously eager audio readiness unchanged.
+        voiceCoaching.prewarmAudio()
     }
 
     init(targetZone: TargetHeartRateZone) {
@@ -76,7 +78,6 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
             } else {
                 try await HealthKitAuthorization.ensureAuthorized(for: .targetPaceWorkout)
             }
-
             let configuration = HKWorkoutConfiguration()
             configuration.activityType = .running
             configuration.locationType = .outdoor
@@ -100,11 +101,6 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
             case .heartRateZone: voiceCoaching.startWorkout(mode: .zone)
             }
             try await builder.beginCollection(at: startDate)
-            #if DEBUG
-            if case .heartRateZone = target {
-                TargetZoneWorkoutLog.write("builder collection began")
-            }
-            #endif
         } catch {
             #if DEBUG
             if case .heartRateZone = target {
@@ -184,17 +180,17 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
 
         if let heartRateType = HKObjectType.quantityType(forIdentifier: .heartRate),
            collectedTypes.contains(heartRateType) {
+            let arrivalDate = Date()
             let statistics = workoutBuilder.statistics(for: heartRateType)
             let recentQuantity = statistics?.mostRecentQuantity()
             let recentInterval = statistics?.mostRecentQuantityDateInterval()
             let bpmUnit = HKUnit.count().unitDivided(by: .minute())
-
             if let recentQuantity {
                 let bpm = recentQuantity.doubleValue(for: bpmUnit)
                 // The delegate reports newly collected HR data. If HealthKit
                 // omits the optional most-recent interval, use this callback's
                 // arrival time for display freshness, never a workout average.
-                let sampleDate = recentInterval?.end ?? Date()
+                let sampleDate = recentInterval?.end ?? arrivalDate
                 Task { @MainActor [weak self] in
                     self?.receiveHeartRate(
                         bpm,
@@ -329,11 +325,6 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
             do {
                 try await workoutBuilder.endCollection(at: endDate)
                 _ = try await workoutBuilder.finishWorkout()
-                #if DEBUG
-                if case .heartRateZone = target {
-                    TargetZoneWorkoutLog.write("workout saved by builder.finishWorkout()")
-                }
-                #endif
             } catch {
                 errorMessage = error.localizedDescription
                 #if DEBUG
