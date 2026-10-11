@@ -1,7 +1,7 @@
 # PaceCoach
 
 <p align="center">
-  <img src="PaceCoach%20Watch%20App/Assets.xcassets/AppIcon.appiconset/PaceCoachAppIcon.png" alt="PaceCoach app logo" width="112">
+  <img src="PaceCoach%20Watch%20App/Resources/Assets.xcassets/AppIcon.appiconset/PaceCoachAppIcon.png" alt="PaceCoach app logo" width="112">
 </p>
 
 **A native Apple Watch running coach that monitors your live pace and tells you when to speed up or slow down to stay within your target range.**
