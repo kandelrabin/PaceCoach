@@ -32,21 +32,16 @@ enum HealthKitAuthorization {
             }
             share = []
             read = [heartRate, restingHeartRate, HKObjectType.workoutType()]
-        case .targetPaceWorkout:
-            guard let speed = HKObjectType.quantityType(forIdentifier: .runningSpeed),
-                  let distance = HKObjectType.quantityType(forIdentifier: .distanceWalkingRunning) else {
-                throw AuthorizationError.healthDataUnavailable
-            }
-            share = [HKObjectType.workoutType()]
-            read = [speed, distance]
-        case .targetZoneWorkout:
+        case .targetPaceWorkout, .targetZoneWorkout:
             guard let speed = HKObjectType.quantityType(forIdentifier: .runningSpeed),
                   let heartRate = HKObjectType.quantityType(forIdentifier: .heartRate),
                   let distance = HKObjectType.quantityType(forIdentifier: .distanceWalkingRunning) else {
                 throw AuthorizationError.healthDataUnavailable
             }
             share = [HKObjectType.workoutType()]
-            read = [speed, heartRate, distance]
+            // Both modes use the same completed-workout reader. Do not depend
+            // on permissions requested by the historical heart-rate profile.
+            read = [HKObjectType.workoutType(), speed, heartRate, distance]
         }
 
         let status: HKAuthorizationRequestStatus

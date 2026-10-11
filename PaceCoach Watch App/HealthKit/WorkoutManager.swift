@@ -18,6 +18,9 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
     @Published private(set) var isStarting = false
     @Published private(set) var errorMessage: String?
 
+    private(set) var runID: UUID?
+    private(set) var completedWorkout: HKWorkout?
+
     private let healthStore = HealthKitAuthorization.healthStore
     private var workoutSession: HKWorkoutSession?
     private var workoutBuilder: HKLiveWorkoutBuilder?
@@ -55,6 +58,9 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
         guard !isStarting, workoutSession == nil else { return }
 
         resetWorkoutState()
+        let runID = UUID()
+        self.runID = runID
+        completedWorkout = nil
         isStarting = true
         errorMessage = nil
         defer { isStarting = false }
@@ -106,6 +112,13 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
             case .heartRateZone: voiceCoaching.startWorkout(mode: .zone)
             }
             try await builder.beginCollection(at: startDate)
+            // HealthKit requires collection to begin before metadata is added.
+            // An identity failure must not discard an otherwise valid workout.
+            do {
+                try await builder.addMetadata([WorkoutRunIdentity.metadataKey: runID.uuidString])
+            } catch {
+                // Preserve HealthKit recording if the optional run tag fails.
+            }
         } catch {
             #if DEBUG
             if case .heartRateZone = target {
@@ -329,7 +342,7 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
         if let workoutBuilder, let workoutSession {
             do {
                 try await workoutBuilder.endCollection(at: endDate)
-                _ = try await workoutBuilder.finishWorkout()
+                completedWorkout = try await workoutBuilder.finishWorkout()
             } catch {
                 errorMessage = error.localizedDescription
                 #if DEBUG
