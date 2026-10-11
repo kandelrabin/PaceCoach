@@ -60,7 +60,8 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
         defer { isStarting = false }
 
         guard HKHealthStore.isHealthDataAvailable(),
-              HKObjectType.quantityType(forIdentifier: .runningSpeed) != nil else {
+              HKObjectType.quantityType(forIdentifier: .runningSpeed) != nil,
+              let distanceType = HKObjectType.quantityType(forIdentifier: .distanceWalkingRunning) else {
             errorMessage = "Health data is unavailable on this device."
             return
         }
@@ -88,6 +89,10 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
                 healthStore: healthStore,
                 workoutConfiguration: configuration
             )
+            let collectsDistanceByDefault = dataSource.typesToCollect.contains(distanceType)
+            if !collectsDistanceByDefault {
+                dataSource.enableCollection(for: distanceType, predicate: nil)
+            }
             builder.dataSource = dataSource
             session.delegate = self
             builder.delegate = self

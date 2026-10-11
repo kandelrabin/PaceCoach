@@ -21,7 +21,7 @@
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>NSHealthShareUsageDescription</key>
-	<string>PaceCoach reads running speed for pace coaching, and resting heart rate, heart rate, and running workout history to prepare heart-rate-zone coaching.</string>
+	<string>PaceCoach reads running speed and distance for workouts and pace coaching, and resting heart rate, heart rate, and running workout history to prepare heart-rate-zone coaching.</string>
 	<key>NSHealthUpdateUsageDescription</key>
 	<string>PaceCoach saves your outdoor running workout to Health.</string>
 	<key>UISupportedInterfaceOrientations</key>
