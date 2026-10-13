@@ -12,6 +12,8 @@ struct CompanionTestView: View {
                     .font(.footnote)
                 Text(connectivity.lastReceivedPing ?? "Waiting for a test message from iPhone.")
                     .font(.footnote)
+                Text(connectivity.stravaProvisioningStatus)
+                    .font(.footnote)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding()

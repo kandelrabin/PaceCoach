@@ -87,6 +87,38 @@ final class StravaConnection: ObservableObject {
         }
     }
 
+    func provisionWatch() {
+        errorMessage = nil
+        do {
+            guard isConnected, let tokens = try tokenStore.load(),
+                  !tokens.accessToken.isEmpty, !tokens.refreshToken.isEmpty,
+                  tokens.expiresAt > 0, tokens.grantsActivityWrite else {
+                errorMessage = "Reconnect Strava on this iPhone before setting up the Watch."
+                return
+            }
+            let payload = StravaProvisioningPayload(
+                protocolVersion: StravaProvisioningPayload.protocolVersion,
+                identifier: UUID(),
+                sequence: try tokenStore.nextProvisioningSequence(),
+                clientID: StravaCredentials.clientID,
+                clientSecret: StravaCredentials.clientSecret,
+                accessToken: tokens.accessToken,
+                refreshToken: tokens.refreshToken,
+                expiresAt: tokens.expiresAt,
+                scope: tokens.scope
+            )
+            guard payload.isValid else {
+                errorMessage = "Local Strava configuration is incomplete."
+                return
+            }
+            try CompanionConnectivity.shared.queueStravaProvisioning(payload)
+        } catch StravaTokenStoreError.keychain {
+            errorMessage = "Could not read the saved Strava connection from Keychain."
+        } catch {
+            errorMessage = "Could not queue Watch setup. Check that the Watch app is installed and try again."
+        }
+    }
+
     private func finish(callbackURL: URL?, error: Error?, expectedState: String) async {
         defer {
             session = nil
@@ -140,6 +172,7 @@ final class StravaConnection: ObservableObject {
             try tokenStore.save(tokens)
             isConnected = true
             errorMessage = nil
+            CompanionConnectivity.shared.invalidateStravaProvisioningStatus()
         } catch let error as URLError {
             errorMessage = "Strava is unreachable (network error \(error.code.rawValue)). Try again."
         } catch StravaConnectionError.http(let status) {

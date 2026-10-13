@@ -27,6 +27,7 @@ enum StravaTokenStoreError: Error {
 struct StravaTokenStore {
     private let service = "com.rabinkandel.PaceCoach.strava"
     private let account = "oauthTokens"
+    private let provisioningCounterAccount = "provisioningCounter"
 
     func load() throws -> StravaTokens? {
         var query = baseQuery
@@ -55,6 +56,50 @@ struct StravaTokenStore {
         guard SecItemAdd(query as CFDictionary, nil) == errSecSuccess else {
             throw StravaTokenStoreError.keychain
         }
+    }
+
+    /// Monotonic across app launches; the clock seed also covers a fresh iPhone install.
+    /// This metadata is stored beside the OAuth record, never in the transfer payload alone.
+    func nextProvisioningSequence() throws -> Int64 {
+        var query = baseQuery
+        query[kSecAttrAccount as String] = provisioningCounterAccount
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        let previous: Int64
+        if status == errSecItemNotFound {
+            previous = 0
+        } else if status == errSecSuccess, let data = result as? Data,
+                  let value = Int64(String(decoding: data, as: UTF8.self)) {
+            previous = value
+        } else {
+            throw StravaTokenStoreError.keychain
+        }
+
+        let now = Int64(Date().timeIntervalSince1970 * 1_000)
+        guard previous < Int64.max else { throw StravaTokenStoreError.keychain }
+        let next = max(now, previous + 1)
+        let data = Data(String(next).utf8)
+        let key = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: provisioningCounterAccount
+        ] as [String: Any]
+        if status == errSecItemNotFound {
+            var add = key
+            add[kSecValueData as String] = data
+            add[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+            guard SecItemAdd(add as CFDictionary, nil) == errSecSuccess else {
+                throw StravaTokenStoreError.keychain
+            }
+        } else {
+            guard SecItemUpdate(key as CFDictionary,
+                                [kSecValueData as String: data] as CFDictionary) == errSecSuccess else {
+                throw StravaTokenStoreError.keychain
+            }
+        }
+        return next
     }
 
     private var baseQuery: [String: Any] {

@@ -16,6 +16,8 @@
 		C20000000000000000000002 /* StravaTokenStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000006 /* StravaTokenStore.swift */; };
 		C20000000000000000000003 /* StravaConnectionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000007 /* StravaConnectionView.swift */; };
 		C20000000000000000000004 /* StravaCredentials.local.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000008 /* StravaCredentials.local.swift */; };
+		D30000000000000000000001 /* StravaProvisioningPayload.swift in iPhone Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000003 /* StravaProvisioningPayload.swift */; };
+		D30000000000000000000002 /* StravaProvisioningPayload.swift in Watch Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000003 /* StravaProvisioningPayload.swift */; };
 		A1B2C3D4E5F6000000000001 /* PaceCoach Widget Extension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000003 /* PaceCoach Widget Extension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		A1B2C3D4E5F6000000000002 /* PaceCoachLauncherWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000004 /* PaceCoachLauncherWidget.swift */; };
 		A1B2C3D4E5F6000000000012 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000011 /* Assets.xcassets */; };
@@ -76,6 +78,7 @@
 		C20000000000000000000008 /* StravaCredentials.local.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StravaCredentials.local.swift; sourceTree = "<group>"; };
 		C20000000000000000000009 /* StravaCredentials.local.swift.example */ = {isa = PBXFileReference; lastKnownFileType = text; path = StravaCredentials.local.swift.example; sourceTree = "<group>"; };
 		C2000000000000000000000A /* iPhone Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		D30000000000000000000003 /* StravaProvisioningPayload.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StravaProvisioningPayload.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F6000000000003 /* PaceCoach Widget Extension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = "PaceCoach Widget Extension.appex"; sourceTree = BUILT_PRODUCTS_DIR; };
 		A1B2C3D4E5F6000000000004 /* PaceCoachLauncherWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaceCoachLauncherWidget.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F6000000000005 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
@@ -165,6 +168,7 @@
 			isa = PBXGroup;
 			children = (
 				B10000000000000000000005 /* CompanionConnectivity.swift */,
+				D30000000000000000000003 /* StravaProvisioningPayload.swift */,
 			);
 			path = Shared;
 			sourceTree = "<group>";
@@ -332,6 +336,7 @@
 				C20000000000000000000002 /* StravaTokenStore.swift in Sources */,
 				C20000000000000000000003 /* StravaConnectionView.swift in Sources */,
 				C20000000000000000000004 /* StravaCredentials.local.swift in Sources */,
+				D30000000000000000000001 /* StravaProvisioningPayload.swift in iPhone Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -340,6 +345,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				B10000000000000000000003 /* CompanionConnectivity.swift in Watch Sources */,
+				D30000000000000000000002 /* StravaProvisioningPayload.swift in Watch Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
