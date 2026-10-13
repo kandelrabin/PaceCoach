@@ -1,4 +1,5 @@
 import Foundation
+import CoreLocation
 import HealthKit
 
 /// Reads only samples associated with one saved workout. No coaching/profile
@@ -81,6 +82,27 @@ struct CompletedWorkoutDataReader {
             return $0.end < $1.end
         }
         return observations
+    }
+
+    /// Reads every route associated with this workout. An absent route is an
+    /// empty result; either the route lookup or point readback may throw.
+    func readRoutes(from workout: HKWorkout) async throws -> [CLLocation] {
+        let query = HKSampleQueryDescriptor(
+            predicates: [.workoutRoute(HKQuery.predicateForObjects(from: workout))],
+            sortDescriptors: [SortDescriptor(\HKWorkoutRoute.startDate)]
+        )
+        let routes = try await query.result(for: healthStore).sorted {
+            if $0.startDate != $1.startDate { return $0.startDate < $1.startDate }
+            return $0.uuid.uuidString < $1.uuid.uuidString
+        }
+        var locations: [CLLocation] = []
+        for route in routes {
+            for try await location in HKWorkoutRouteQueryDescriptor(route).results(for: healthStore) {
+                try Task.checkCancellation()
+                locations.append(location)
+            }
+        }
+        return locations
     }
 
     private enum ReadError: LocalizedError {
