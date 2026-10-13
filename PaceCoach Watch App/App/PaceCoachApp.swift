@@ -9,6 +9,10 @@ import SwiftUI
 
 @main
 struct PaceCoach_Watch_AppApp: App {
+    init() {
+        _ = CompanionConnectivity.shared
+    }
+
     var body: some Scene {
         WindowGroup {
             ContentView()

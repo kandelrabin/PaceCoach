@@ -31,6 +31,16 @@ struct ContentView: View {
                             symbol: "heart.fill"
                         )
                     }
+
+                    NavigationLink {
+                        CompanionTestView()
+                    } label: {
+                        modeLabel(
+                            title: "iPhone Companion",
+                            subtitle: "Check the Watch connection",
+                            symbol: "iphone.gen3.radiowaves.left.and.right"
+                        )
+                    }
                 }
                 .buttonStyle(.plain)
                 .padding(.horizontal, 8)
