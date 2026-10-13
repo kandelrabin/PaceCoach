@@ -25,7 +25,7 @@ final class StravaConnection: ObservableObject {
         }
     }
 
-    func connect() {
+    func connect(forceApproval: Bool = false) {
         guard !isConnecting else { return }
         errorMessage = nil
 
@@ -57,7 +57,7 @@ final class StravaConnection: ObservableObject {
             URLQueryItem(name: "client_id", value: StravaCredentials.clientID),
             URLQueryItem(name: "redirect_uri", value: Self.callbackURI),
             URLQueryItem(name: "response_type", value: "code"),
-            URLQueryItem(name: "approval_prompt", value: "auto"),
+            URLQueryItem(name: "approval_prompt", value: forceApproval ? "force" : "auto"),
             URLQueryItem(name: "scope", value: "activity:write"),
             URLQueryItem(name: "state", value: expectedState)
         ]

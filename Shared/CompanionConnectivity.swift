@@ -13,10 +13,13 @@ final class CompanionConnectivity: NSObject, ObservableObject, WCSessionDelegate
 
     private static let provisioningKind = "pacecoach.strava.provision.v1"
     private static let acknowledgementKind = "pacecoach.strava.provision.ack.v1"
+    private static let watchOwnershipKind = "pacecoach.strava.watch-owner.v1"
 
     #if os(iOS)
     private static let progressKey = "stravaProvisioningProgress"
     private var progress: ProvisioningProgress?
+
+    var watchOwnsRefreshToken: Bool { progress?.state == .watchOwned }
     #endif
 
     private override init() {
@@ -146,52 +149,85 @@ final class CompanionConnectivity: NSObject, ObservableObject, WCSessionDelegate
 
     func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any]) {
         #if os(iOS)
-        guard userInfo["kind"] as? String == Self.acknowledgementKind,
+        guard let kind = userInfo["kind"] as? String,
               let identifierString = userInfo["identifier"] as? String,
               let identifier = UUID(uuidString: identifierString),
-              let sequence = userInfo["sequence"] as? Int64,
+              let sequence = userInfo["sequence"] as? Int64 else { return }
+        if kind == Self.watchOwnershipKind {
+            DispatchQueue.main.async {
+                guard let current = self.progress,
+                      current.identifier == identifier, current.sequence == sequence else { return }
+                self.updateProgress(ProvisioningProgress(identifier: identifier,
+                                                         sequence: sequence, state: .watchOwned))
+            }
+            return
+        }
+        guard kind == Self.acknowledgementKind,
               let result = userInfo["result"] as? String else { return }
         DispatchQueue.main.async {
             guard let current = self.progress, current.state == .pending,
                   current.identifier == identifier, current.sequence == sequence else { return }
+            let state: ProvisioningProgress.State = switch result {
+            case "ready": .ready
+            case "watchOwned": .watchOwned
+            default: .failed
+            }
             self.updateProgress(ProvisioningProgress(identifier: identifier,
                                                      sequence: sequence,
-                                                     state: result == "ready" ? .ready : .failed))
+                                                     state: state))
         }
         #else
         guard userInfo["kind"] as? String == Self.provisioningKind,
               let identifierString = userInfo["identifier"] as? String,
               let identifier = UUID(uuidString: identifierString),
               let sequence = userInfo["sequence"] as? Int64, sequence > 0 else { return }
-        var result = "failed"
-        do {
-            guard let data = userInfo["payload"] as? Data, data.count <= 65_536 else {
-                throw WatchStravaStoreError.invalidPayload
+        Task {
+            var result = "failed"
+            do {
+                guard let data = userInfo["payload"] as? Data, data.count <= 65_536 else {
+                    throw WatchStravaStoreError.invalidPayload
+                }
+                let payload = try JSONDecoder().decode(StravaProvisioningPayload.self, from: data)
+                guard payload.identifier == identifier, payload.sequence == sequence else {
+                    throw WatchStravaStoreError.invalidPayload
+                }
+                try await WatchStravaTokenService.shared.acceptProvisioning(payload)
+                result = "ready"
+                DispatchQueue.main.async {
+                    self.stravaProvisioningStatus = "Strava Ready on Watch"
+                }
+            } catch WatchStravaStoreError.staleCredential {
+                result = "watchOwned"
+            } catch WatchStravaStoreError.stalePayload {
+                // Keep the newer persisted setup. The iPhone can retry with a new version.
+            } catch {
+                DispatchQueue.main.async {
+                    self.stravaProvisioningStatus = "Strava setup failed on Watch."
+                }
             }
-            let payload = try JSONDecoder().decode(StravaProvisioningPayload.self, from: data)
-            guard payload.identifier == identifier, payload.sequence == sequence else {
-                throw WatchStravaStoreError.invalidPayload
-            }
-            try WatchStravaCredentialStore().accept(payload)
-            result = "ready"
-            DispatchQueue.main.async {
-                self.stravaProvisioningStatus = "Strava Ready on Watch"
-            }
-        } catch WatchStravaStoreError.stalePayload {
-            // Keep the newer persisted setup. The iPhone can retry with a new version.
-        } catch {
-            DispatchQueue.main.async {
-                self.stravaProvisioningStatus = "Strava setup failed on Watch."
+            if session.activationState == .activated {
+                session.transferUserInfo([
+                    "kind": Self.acknowledgementKind,
+                    "identifier": identifier.uuidString,
+                    "sequence": sequence,
+                    "result": result
+                ])
             }
         }
-        session.transferUserInfo([
-            "kind": Self.acknowledgementKind,
-            "identifier": identifier.uuidString,
-            "sequence": sequence,
-            "result": result
-        ])
         #endif
     }
+
+    #if os(watchOS)
+    func reportWatchRefreshOwnership(identifier: UUID, sequence: Int64) {
+        let session = WCSession.default
+        guard session.activationState == .activated else { return }
+        session.transferUserInfo([
+            "kind": Self.watchOwnershipKind,
+            "identifier": identifier.uuidString,
+            "sequence": sequence
+        ])
+    }
+    #endif
 
     #if os(iOS)
     func session(_ session: WCSession, didFinish userInfoTransfer: WCSessionUserInfoTransfer,
@@ -233,6 +269,7 @@ private struct ProvisioningProgress: Codable {
         case pending
         case ready
         case failed
+        case watchOwned
     }
 
     let identifier: UUID
@@ -244,6 +281,7 @@ private struct ProvisioningProgress: Codable {
         case .pending: "Watch setup pending. Keep the devices paired; delivery may take time."
         case .ready: "Strava Ready on Watch"
         case .failed: "Watch setup failed. Tap Set Up Apple Watch to retry."
+        case .watchOwned: "Watch owns Strava tokens. Reconnect Strava on iPhone to set up again."
         }
     }
 }

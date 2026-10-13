@@ -9,9 +9,15 @@ struct StravaConnectionView: View {
             if connection.isConnected {
                 Label("Strava Connected", systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green)
-                Button("Set Up Apple Watch") {
-                    connection.provisionWatch()
+                if !connectivity.watchOwnsRefreshToken {
+                    Button("Set Up Apple Watch") {
+                        connection.provisionWatch()
+                    }
                 }
+                Button("Reconnect Strava") {
+                    connection.connect(forceApproval: true)
+                }
+                .disabled(connection.isConnecting)
                 Text(connectivity.stravaProvisioningStatus)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
