@@ -51,23 +51,23 @@ struct CompanionTestView: View {
                     Button("Prepare TCX") {
                         Task { await manualUpload.prepareTCX() }
                     }
-                    .disabled(manualUpload.isBusy || !manualUpload.attempt.canPrepare)
+                    .disabled(manualUpload.isBusy || manualUpload.upload?.isPostEligible != true)
                 }
-                if manualUpload.attempt.tcxFile != nil {
+                if manualUpload.tcxFile != nil {
                     Text("TCX prepared")
                         .font(.footnote)
                     Button("Upload Selected TCX to Strava") {
                         Task { await manualUpload.submit() }
                     }
-                    .disabled(manualUpload.isBusy || !manualUpload.attempt.canSubmit)
+                    .disabled(manualUpload.isBusy || manualUpload.upload?.isPostEligible != true)
                 }
-                if let uploadID = manualUpload.attempt.uploadID {
+                if let uploadID = manualUpload.upload?.uploadID {
                     Text("Strava upload ID: \(uploadID)")
                         .font(.caption2)
                     Button("Check Status") {
                         Task { await manualUpload.checkStatus() }
                     }
-                    .disabled(manualUpload.isBusy || !manualUpload.attempt.canCheckStatus)
+                    .disabled(manualUpload.isBusy || manualUpload.upload?.canCheckStatus != true)
                 }
                 if manualUpload.selectedRunID != nil {
                     Text(uploadStateText)
@@ -84,14 +84,14 @@ struct CompanionTestView: View {
     }
 
     private var uploadStateText: String {
-        switch manualUpload.attempt.phase {
-        case .notPrepared: "TCX not prepared"
-        case .preparationFailed: "TCX preparation failed"
-        case .ready: "TCX ready; upload has not started"
+        guard let upload = manualUpload.upload else { return "Upload state unavailable" }
+        return switch upload.phase {
+        case .pending: manualUpload.tcxFile == nil ? "Pending; TCX not prepared" : "Pending; TCX ready"
+        case .retryableFailure: "Pre-request failure; safe to retry"
         case .submitting: "Upload request in progress"
         case .accepted: "Strava accepted the upload; processing may continue"
         case .processing: "Strava is processing the upload"
-        case .completed(let activityID): "Completed: Strava activity ID \(activityID)"
+        case .completed(_, let activityID): "Completed: Strava activity ID \(activityID)"
         case .duplicate: "Strava reported a duplicate"
         case .failed: "Strava upload failed"
         case .outcomeUnknown: "Upload outcome unknown; do not resubmit"

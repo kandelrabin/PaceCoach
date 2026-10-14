@@ -8,12 +8,17 @@ final class ManualStravaUploadFlow: ObservableObject {
 
     @Published private(set) var selectedWorkout: HKWorkout?
     @Published private(set) var selectedRunID: UUID?
-    @Published private(set) var attempt = ManualStravaUploadAttempt()
+    @Published private(set) var upload: PendingStravaUpload?
+    @Published private(set) var tcxFile: URL?
     @Published private(set) var isBusy = false
     @Published private(set) var message: String?
 
     private let healthStore = HealthKitAuthorization.healthStore
-    private var attemptsByRunID: [UUID: ManualStravaUploadAttempt] = [:]
+    private let store: PendingStravaUploadStore?
+
+    private init() {
+        store = try? PendingStravaUploadStore()
+    }
 
     func findLatest() async {
         guard !isBusy else { return }
@@ -26,95 +31,135 @@ final class ManualStravaUploadFlow: ObservableObject {
             let workouts = try await savedRunningWorkouts()
             guard let workout = PaceCoachSavedRunSelection.latest(
                     in: workouts, acceptedSourceBundleIDs: PaceCoachSavedRunSelection.acceptedSourceBundleIDs
-                  ),
-                  let runID = WorkoutRunIdentity.runID(in: workout) else {
+                  ), let runID = WorkoutRunIdentity.runID(in: workout) else {
                 selectedWorkout = nil
                 selectedRunID = nil
-                attempt = ManualStravaUploadAttempt()
+                upload = nil
+                tcxFile = nil
                 message = "No saved outdoor PaceCoach run is available in Health."
                 return
             }
+            guard let store else { throw PendingStravaUploadStore.StoreError.documentsUnavailable }
+            let record = try store.loadOrCreate(runID: runID)
             selectedWorkout = workout
             selectedRunID = runID
-            attempt = attemptsByRunID[runID] ?? ManualStravaUploadAttempt()
+            upload = record
+            tcxFile = nil
             message = "Saved run selected."
         } catch {
             selectedWorkout = nil
             selectedRunID = nil
-            attempt = ManualStravaUploadAttempt()
-            message = "Could not read saved workouts. Check Health permissions and try again."
+            upload = nil
+            tcxFile = nil
+            message = "Could not read the saved run or its upload state. No upload is allowed."
         }
     }
 
     func prepareTCX() async {
         guard !isBusy, let workout = selectedWorkout, let runID = selectedRunID,
-              attempt.canPrepare else { return }
+              upload?.isPostEligible == true else { return }
         isBusy = true
         defer { isBusy = false }
         message = "Preparing TCX from saved workout…"
         do {
             let run = try await CompletedRunExportBuilder(healthStore: healthStore).build(from: workout)
-            guard run.runID == runID else {
-                throw StravaUploadError.invalidResponse
-            }
+            guard run.runID == runID else { throw StravaUploadError.invalidResponse }
             let tcx = try TCXActivityEncoder().encode(run)
-            let file = try TCXExportFileWriter().write(tcx.data, runID: runID)
-            attempt.prepared(file: file)
-            rememberAttempt()
+            tcxFile = try TCXExportFileWriter().write(tcx.data, runID: runID)
             message = "TCX prepared: \(tcx.trackpointCount) trackpoints."
         } catch {
-            attempt.preparationFailed()
-            rememberAttempt()
+            tcxFile = nil
             message = "TCX preparation failed. The saved workout is unchanged."
         }
     }
 
     func submit() async {
-        guard !isBusy, let runID = selectedRunID, let file = attempt.tcxFile,
-              attempt.beginSubmission() else { return }
-        rememberAttempt()
+        guard !isBusy, let runID = selectedRunID, let file = tcxFile,
+              let current = upload, current.isPostEligible, let store else { return }
         isBusy = true
         defer { isBusy = false }
-        message = "Submitting TCX to Strava…"
+        message = "Preparing Strava request…"
+
+        // File read, token refresh, and request construction happen before the
+        // durable submitting state. Failures here cannot create an upload.
+        let request: URLRequest
         do {
-            attempt.receive(try await WatchStravaUploadService.shared.upload(tcxFile: file, runID: runID))
-            rememberAttempt()
-            message = "Strava responded. Check status manually if processing continues."
+            request = try await WatchStravaUploadService.shared.prepareUpload(tcxFile: file, runID: runID)
+        } catch {
+            var failed = current
+            failed.preRequestFailed()
+            do { try store.save(failed); upload = failed }
+            catch { message = "Could not save upload state. No request was sent."; return }
+            message = "Request preparation failed before POST. Retry is safe."
+            return
+        }
+
+        var submitting = current
+        guard submitting.beginSubmission() else { return }
+        do {
+            try store.save(submitting)
+            upload = submitting
+        } catch {
+            message = "Could not save upload state. No request was sent."
+            return
+        }
+        message = "Submitting TCX to Strava…"
+        let status: StravaUploadStatus
+        do {
+            status = try await WatchStravaUploadService.shared.submitPrepared(request)
         } catch {
             let uploadError = error as? StravaUploadError
-            let ambiguous: Bool
+            // A received 4xx rejection is terminal. A transport failure,
+            // malformed success response, or 5xx may hide an accepted POST.
             switch uploadError {
-            case .network, .invalidResponse: ambiguous = true
-            case .httpStatus(let code): ambiguous = code >= 500
-            default: ambiguous = false
+            case .duplicate: submitting.rejected(duplicate: true)
+            case .httpStatus(let code) where code >= 400 && code < 500:
+                submitting.rejected(duplicate: false)
+            default: submitting.postOutcomeUnknown()
             }
-            attempt.submissionFailed(ambiguous: ambiguous,
-                                     duplicate: uploadError == .duplicate)
-            rememberAttempt()
-            message = ambiguous
-                ? "Outcome unknown: the request may have reached Strava. Do not submit this run again."
-                : uploadError == .duplicate
-                    ? "Strava reported a duplicate. This run will not be resubmitted here."
-                    : "Submission failed. This run will not be resubmitted in this validation flow."
+            do {
+                try store.save(submitting)
+                upload = submitting
+                message = submitting.phase == .outcomeUnknown
+                    ? "Outcome unknown: the request may have reached Strava. Do not submit again."
+                    : "Strava rejected the upload. This run will not be resubmitted."
+            } catch {
+                // The durable submitting record is still conservative on relaunch.
+                upload = submitting
+                message = "Could not save Strava's result. Do not submit again."
+            }
+            return
+        }
+
+        submitting.receive(status)
+        upload = submitting
+        do {
+            try store.save(submitting)
+            upload = submitting
+            message = "Strava responded. Check status manually if processing continues."
+        } catch {
+            // Retain the accepted ID in memory. The durable submitting record
+            // becomes outcome unknown on relaunch if this write never succeeds.
+            message = "Strava responded, but its result could not be saved. Do not submit again."
         }
     }
 
     func checkStatus() async {
-        guard !isBusy, attempt.canCheckStatus, let uploadID = attempt.uploadID else { return }
+        guard !isBusy, let current = upload, current.canCheckStatus,
+              let uploadID = current.uploadID, let store else { return }
         isBusy = true
         defer { isBusy = false }
         message = "Checking Strava processing status…"
         do {
-            attempt.receive(try await WatchStravaUploadService.shared.checkStatus(uploadID: uploadID))
-            rememberAttempt()
+            let status = try await WatchStravaUploadService.shared.checkStatus(uploadID: uploadID)
+            var updated = current
+            updated.receive(status)
+            try store.save(updated)
+            upload = updated
             message = "Strava status updated."
         } catch {
-            message = "Could not check Strava status. Use Check Status again later; no TCX was reposted."
+            message = "Could not save or check Strava status. Check again later; no TCX was reposted."
         }
-    }
-
-    private func rememberAttempt() {
-        if let selectedRunID { attemptsByRunID[selectedRunID] = attempt }
     }
 
     private func savedRunningWorkouts() async throws -> [HKWorkout] {

@@ -11,11 +11,15 @@ final class WatchStravaUploadService {
         self.session = session
     }
 
-    /// The run ID must come from CompletedRunExport.runID or WorkoutRunIdentity.
-    func upload(tcxFile: URL, runID: UUID) async throws -> StravaUploadStatus {
+    /// Complete all local work, including token refresh, before the ledger
+    /// records an in-flight POST. This method does not submit an upload.
+    func prepareUpload(tcxFile: URL, runID: UUID) async throws -> URLRequest {
         let tcx = try Data(contentsOf: tcxFile)
         let token = try await WatchStravaTokenService.shared.validAccessToken().value
-        let request = StravaUploadAPI.uploadRequest(tcx: tcx, runID: runID, accessToken: token)
+        return StravaUploadAPI.uploadRequest(tcx: tcx, runID: runID, accessToken: token)
+    }
+
+    func submitPrepared(_ request: URLRequest) async throws -> StravaUploadStatus {
         let (data, response) = try await send(request)
         return try StravaUploadAPI.decode(data, httpStatus: response.statusCode, submitted: true)
     }

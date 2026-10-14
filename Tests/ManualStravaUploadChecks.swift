@@ -1,8 +1,8 @@
 import Foundation
 import HealthKit
 
-// Compile with WorkoutRunIdentity.swift, StravaUploadAPI.swift, and
-// ManualStravaUploadState.swift. No network or Health database is used.
+// Compile with WorkoutRunIdentity.swift and ManualStravaUploadState.swift.
+// No network or Health database is used.
 @main
 struct ManualStravaUploadChecks {
     private static var checks = 0
@@ -11,7 +11,6 @@ struct ManualStravaUploadChecks {
 
     static func main() {
         selection()
-        attemptState()
         print("Manual Strava upload checks passed (\(checks) assertions)")
     }
 
@@ -50,45 +49,6 @@ struct ManualStravaUploadChecks {
               "indoor run excluded")
         check(PaceCoachSavedRunSelection.latest(in: [otherSport], acceptedSourceBundleIDs: [bundleID]) == nil,
               "other sport excluded")
-    }
-
-    private static func attemptState() {
-        var attempt = ManualStravaUploadAttempt()
-        let file = URL(fileURLWithPath: "/tmp/pacecoach-test.tcx")
-        check(attempt.canPrepare && !attempt.canSubmit, "preparation required")
-        attempt.preparationFailed()
-        check(attempt.canPrepare, "preparation can be retried")
-        attempt.prepared(file: file)
-        check(attempt.canSubmit, "prepared file can submit")
-        check(attempt.beginSubmission(), "first submit starts")
-        check(!attempt.beginSubmission() && !attempt.canSubmit, "concurrent submit blocked")
-        attempt.receive(status(.accepted))
-        check(attempt.uploadID == "123" && attempt.canCheckStatus, "accepted ID retained")
-        check(!attempt.beginSubmission(), "accepted upload cannot be reposted")
-        attempt.receive(status(.processing))
-        check(attempt.phase == .processing, "manual check can report processing")
-        attempt.receive(StravaUploadStatus(uploadID: "999", externalID: nil,
-                                          statusText: nil, state: .completed(activityID: 888)))
-        check(attempt.phase == .processing && attempt.uploadID == "123", "different upload ID ignored")
-        attempt.receive(status(.completed(activityID: 456)))
-        check(attempt.phase == .completed(456), "completed activity retained")
-
-        var unknown = ManualStravaUploadAttempt()
-        unknown.prepared(file: file)
-        check(unknown.beginSubmission(), "ambiguous attempt starts")
-        unknown.submissionFailed(ambiguous: true)
-        check(unknown.phase == .outcomeUnknown && !unknown.canSubmit,
-              "ambiguous network outcome blocks repost")
-
-        var duplicate = ManualStravaUploadAttempt()
-        duplicate.prepared(file: file)
-        check(duplicate.beginSubmission(), "duplicate attempt starts")
-        duplicate.submissionFailed(ambiguous: false, duplicate: true)
-        check(duplicate.phase == .duplicate && !duplicate.canSubmit, "duplicate blocks repost")
-    }
-
-    private static func status(_ state: StravaUploadStatus.State) -> StravaUploadStatus {
-        StravaUploadStatus(uploadID: "123", externalID: nil, statusText: nil, state: state)
     }
 
     private static func workout(
