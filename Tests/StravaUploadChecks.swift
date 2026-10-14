@@ -9,6 +9,13 @@ struct StravaUploadChecks {
     private static let runID = UUID(uuidString: "12345678-ABCD-4321-ABCD-123456789ABC")!
 
     static func main() throws {
+        let preflight = StravaUploadAPI.preflightRequest()
+        check(preflight.url == StravaUploadAPI.baseURL && preflight.httpMethod == "HEAD", "read-only probe to Strava origin")
+        check(preflight.httpBody == nil && preflight.value(forHTTPHeaderField: "Authorization") == nil,
+              "preflight contains no TCX or credentials")
+        check(preflight.timeoutInterval == 5 && preflight.cachePolicy == .reloadIgnoringLocalCacheData,
+              "short probe ignores local cached responses")
+        check(preflight.value(forHTTPHeaderField: "Cache-Control") == "no-cache", "probe requests revalidation")
         let externalID = "pacecoach-12345678-abcd-4321-abcd-123456789abc"
         check(StravaUploadAPI.externalID(for: runID) == externalID, "stable lowercase external ID")
         check(StravaUploadAPI.externalID(for: runID) == StravaUploadAPI.externalID(for: runID), "repeat attempt ID")

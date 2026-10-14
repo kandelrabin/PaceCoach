@@ -372,6 +372,7 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
         workoutEndDate = finalEndDate
         await routeRecorder?.stopAndDrain(at: finalEndDate)
 
+        var savedWorkoutForUpload: HKWorkout?
         if let workoutBuilder, let workoutSession {
             do {
                 try await workoutBuilder.endCollection(at: finalEndDate)
@@ -391,6 +392,8 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
                     print("[WorkoutRoute] not saved (saved workout unavailable)")
                     #endif
                 }
+                // The saved workout and route are final before Strava sees it.
+                savedWorkoutForUpload = savedWorkout
             } catch {
                 errorMessage = error.localizedDescription
                 #if DEBUG
@@ -400,6 +403,14 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
                 #endif
             }
             workoutSession.end()
+        }
+
+        if let savedWorkoutForUpload, let runID {
+            // Registration is durable and fast; export and network work run in
+            // a process-owned task after this method has resumed End Run.
+            AutomaticStravaUploadFlow.shared.registerAndStart(
+                savedWorkout: savedWorkoutForUpload, runID: runID
+            )
         }
 
         workoutBuilder = nil

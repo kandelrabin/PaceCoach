@@ -24,6 +24,12 @@ final class WatchStravaUploadService {
         return try StravaUploadAPI.decode(data, httpStatus: response.statusCode, submitted: true)
     }
 
+    func checkUploadPreflight() async throws {
+        // Any HTTP response establishes only that the probe returned. A later
+        // POST can still fail ambiguously; never use this to reclassify it.
+        _ = try await send(StravaUploadAPI.preflightRequest())
+    }
+
     func checkStatus(uploadID: String) async throws -> StravaUploadStatus {
         let token = try await WatchStravaTokenService.shared.validAccessToken().value
         let request = try StravaUploadAPI.statusRequest(uploadID: uploadID, accessToken: token)

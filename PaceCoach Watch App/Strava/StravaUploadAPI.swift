@@ -30,6 +30,16 @@ enum StravaUploadAPI {
         "pacecoach-\(runID.uuidString.lowercased())"
     }
 
+    /// A read-only connectivity probe, never an upload or a processing check.
+    static func preflightRequest(baseURL: URL = baseURL) -> URLRequest {
+        var request = URLRequest(url: baseURL)
+        request.httpMethod = "HEAD"
+        request.timeoutInterval = 5
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+        return request
+    }
+
     static func uploadRequest(
         tcx: Data, runID: UUID, accessToken: String,
         boundary: String = "PaceCoach-\(UUID().uuidString)", baseURL: URL = baseURL

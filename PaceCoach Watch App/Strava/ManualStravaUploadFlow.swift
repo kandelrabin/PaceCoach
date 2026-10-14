@@ -75,26 +75,57 @@ final class ManualStravaUploadFlow: ObservableObject {
 
     func submit() async {
         guard !isBusy, let runID = selectedRunID, let file = tcxFile,
-              let current = upload, current.isPostEligible, let store else { return }
+              upload?.isPostEligible == true, let store else { return }
         isBusy = true
         defer { isBusy = false }
         message = "Preparing Strava request…"
 
-        // File read, token refresh, and request construction happen before the
-        // durable submitting state. Failures here cannot create an upload.
+        // The automatic flow can update the ledger after this screen selected
+        // the run. Never trust the screen's older in-memory snapshot for POST.
+        do {
+            guard let latest = try store.load(runID: runID), latest.isPostEligible else {
+                message = "Upload state changed. Find the saved run again."
+                return
+            }
+        } catch {
+            message = "Could not read upload state. No request was sent."
+            return
+        }
+
+        // Preparation and the read-only probe precede submitting. Failures here
+        // cannot create an upload, even if the probe reached the server.
         let request: URLRequest
         do {
             request = try await WatchStravaUploadService.shared.prepareUpload(tcxFile: file, runID: runID)
+            try await WatchStravaUploadService.shared.checkUploadPreflight()
         } catch {
-            var failed = current
-            failed.preRequestFailed()
-            do { try store.save(failed); upload = failed }
-            catch { message = "Could not save upload state. No request was sent."; return }
+            do {
+                guard var failed = try store.load(runID: runID), failed.isPostEligible else {
+                    message = "Upload state changed. Find the saved run again."
+                    return
+                }
+                failed.preRequestFailed()
+                try store.save(failed)
+                upload = failed
+            } catch {
+                message = "Could not save upload state. No request was sent."
+                return
+            }
             message = "Request preparation failed before POST. Retry is safe."
             return
         }
 
-        var submitting = current
+        var submitting: PendingStravaUpload
+        do {
+            guard let latest = try store.load(runID: runID), latest.isPostEligible else {
+                message = "Upload state changed. Find the saved run again."
+                return
+            }
+            submitting = latest
+        } catch {
+            message = "Could not read upload state. No request was sent."
+            return
+        }
         guard submitting.beginSubmission() else { return }
         do {
             try store.save(submitting)
