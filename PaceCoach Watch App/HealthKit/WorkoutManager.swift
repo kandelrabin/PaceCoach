@@ -25,6 +25,7 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
     private var workoutSession: HKWorkoutSession?
     private var workoutBuilder: HKLiveWorkoutBuilder?
     private var routeRecorder: WorkoutRouteRecorder?
+    private var routeAvailabilityReason = "route recorder not created"
     private var workoutEndDate: Date?
     private var endContinuation: CheckedContinuation<Void, Never>?
     private var isFinishingWorkout = false
@@ -63,6 +64,7 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
         let runID = UUID()
         self.runID = runID
         completedWorkout = nil
+        routeAvailabilityReason = "route recorder not created"
         isStarting = true
         errorMessage = nil
         defer { isStarting = false }
@@ -93,7 +95,12 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
             do {
                 try await HealthKitAuthorization.ensureAuthorized(for: .workoutRoute)
                 routeAuthorized = healthStore.authorizationStatus(for: HKSeriesType.workoutRoute()) == .sharingAuthorized
+                if !routeAuthorized {
+                    routeAvailabilityReason = "HealthKit route sharing status \(healthStore.authorizationStatus(for: HKSeriesType.workoutRoute()).rawValue)"
+                }
             } catch {
+                let failure = error as NSError
+                routeAvailabilityReason = "route authorization \(failure.domain) code \(failure.code)"
                 // Continue recording the workout without a route.
             }
             let configuration = HKWorkoutConfiguration()
@@ -373,19 +380,27 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
         await routeRecorder?.stopAndDrain(at: finalEndDate)
 
         var savedWorkoutForUpload: HKWorkout?
+        var routeDiagnosticSummary = routeAvailabilityReason
+        var didFinalizeWorkout = false
         if let workoutBuilder, let workoutSession {
+            didFinalizeWorkout = true
             do {
                 try await workoutBuilder.endCollection(at: finalEndDate)
                 let savedWorkout = try await workoutBuilder.finishWorkout()
                 completedWorkout = savedWorkout
                 if let savedWorkout, let routeRecorder {
+                    // Keep the recorder alive until its route is attached to the saved workout.
                     let routeResult = await routeRecorder.finishRoute(with: savedWorkout)
+                    routeDiagnosticSummary = routeRecorder.diagnosticSummary(result: routeResult.description)
                     #if DEBUG
                     if case .failed = routeResult {
                         print("[WorkoutRoute] \(routeResult)")
                     }
                     #endif
                 } else if routeRecorder != nil {
+                    routeDiagnosticSummary = routeRecorder?.diagnosticSummary(
+                        result: "not saved (saved workout unavailable)"
+                    ) ?? routeAvailabilityReason
                     // HealthKit may save a workout but return nil while locked.
                     // Without its HKWorkout value the route cannot be associated.
                     #if DEBUG
@@ -396,6 +411,10 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
                 savedWorkoutForUpload = savedWorkout
             } catch {
                 errorMessage = error.localizedDescription
+                let failure = error as NSError
+                routeDiagnosticSummary = routeRecorder?.diagnosticSummary(
+                    result: "workout save failed (\(failure.domain) code \(failure.code))"
+                ) ?? routeAvailabilityReason
                 #if DEBUG
                 if case .heartRateZone = target {
                     TargetZoneWorkoutLog.write("workout finish failed: \(error)")
@@ -403,6 +422,18 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
                 #endif
             }
             workoutSession.end()
+        }
+
+        if didFinalizeWorkout, let runID {
+            do {
+                try WorkoutRouteDiagnosticStore().save(WorkoutRouteDiagnostic(
+                    runID: runID, workoutID: completedWorkout?.uuid, summary: routeDiagnosticSummary
+                ))
+            } catch {
+                #if DEBUG
+                print("[WorkoutRoute] diagnostic could not be saved for \(runID)")
+                #endif
+            }
         }
 
         if let savedWorkoutForUpload, let runID {

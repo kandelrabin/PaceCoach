@@ -9,6 +9,7 @@ final class ManualStravaUploadFlow: ObservableObject {
     @Published private(set) var selectedWorkout: HKWorkout?
     @Published private(set) var selectedRunID: UUID?
     @Published private(set) var upload: PendingStravaUpload?
+    @Published private(set) var routeDiagnostic: WorkoutRouteDiagnostic?
     @Published private(set) var tcxFile: URL?
     @Published private(set) var isBusy = false
     @Published private(set) var message: String?
@@ -35,6 +36,7 @@ final class ManualStravaUploadFlow: ObservableObject {
                 selectedWorkout = nil
                 selectedRunID = nil
                 upload = nil
+                routeDiagnostic = nil
                 tcxFile = nil
                 message = "No saved outdoor PaceCoach run is available in Health."
                 return
@@ -44,12 +46,14 @@ final class ManualStravaUploadFlow: ObservableObject {
             selectedWorkout = workout
             selectedRunID = runID
             upload = record
+            routeDiagnostic = (try? WorkoutRouteDiagnosticStore())?.load(runID: runID)
             tcxFile = nil
             message = "Saved run selected."
         } catch {
             selectedWorkout = nil
             selectedRunID = nil
             upload = nil
+            routeDiagnostic = nil
             tcxFile = nil
             message = "Could not read the saved run or its upload state. No upload is allowed."
         }

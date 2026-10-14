@@ -48,6 +48,10 @@ struct CompanionTestView: View {
                         .font(.footnote)
                     Text("Run ID: \(runID.uuidString.lowercased())")
                         .font(.caption2)
+                    if let diagnostic = manualUpload.routeDiagnostic {
+                        Text("GPS route: \(diagnostic.summary)")
+                            .font(.caption2)
+                    }
                     Button("Prepare TCX") {
                         Task { await manualUpload.prepareTCX() }
                     }
