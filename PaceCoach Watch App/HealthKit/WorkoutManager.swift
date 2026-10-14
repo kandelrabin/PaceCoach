@@ -118,9 +118,11 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
 
             let startDate = Date()
             if routeAuthorized {
-                if let routeBuilder = builder.seriesBuilder(for: HKSeriesType.workoutRoute()) as? HKWorkoutRouteBuilder {
-                    routeRecorder = WorkoutRouteRecorder(routeBuilder: routeBuilder, startDate: startDate)
-                }
+                // A series builder from workoutBuilder auto-finishes with the
+                // workout. This standalone builder instead receives the actual
+                // saved workout in finishRoute(with:) below.
+                let routeBuilder = HKWorkoutRouteBuilder(healthStore: healthStore, device: nil)
+                routeRecorder = WorkoutRouteRecorder(routeBuilder: routeBuilder, startDate: startDate)
             }
             session.startActivity(with: startDate)
             switch target {
@@ -373,7 +375,22 @@ final class WorkoutManager: NSObject, ObservableObject, HKWorkoutSessionDelegate
         if let workoutBuilder, let workoutSession {
             do {
                 try await workoutBuilder.endCollection(at: finalEndDate)
-                completedWorkout = try await workoutBuilder.finishWorkout()
+                let savedWorkout = try await workoutBuilder.finishWorkout()
+                completedWorkout = savedWorkout
+                if let savedWorkout, let routeRecorder {
+                    let routeResult = await routeRecorder.finishRoute(with: savedWorkout)
+                    #if DEBUG
+                    if case .failed = routeResult {
+                        print("[WorkoutRoute] \(routeResult)")
+                    }
+                    #endif
+                } else if routeRecorder != nil {
+                    // HealthKit may save a workout but return nil while locked.
+                    // Without its HKWorkout value the route cannot be associated.
+                    #if DEBUG
+                    print("[WorkoutRoute] not saved (saved workout unavailable)")
+                    #endif
+                }
             } catch {
                 errorMessage = error.localizedDescription
                 #if DEBUG

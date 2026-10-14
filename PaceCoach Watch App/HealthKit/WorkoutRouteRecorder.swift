@@ -1,8 +1,8 @@
 import CoreLocation
 import HealthKit
 
-/// Captures the locations for one live workout. The route builder belongs to
-/// the workout builder, so finishing the workout also finishes its route.
+/// Captures locations for one live workout, then saves the standalone route
+/// against the already saved HKWorkout.
 @MainActor
 final class WorkoutRouteRecorder: NSObject, CLLocationManagerDelegate {
     private final class DrainSignal {
@@ -41,6 +41,22 @@ final class WorkoutRouteRecorder: NSObject, CLLocationManagerDelegate {
     private var insertionError: Error?
     private var insertionAbandoned = false
     private var drainTask: Task<Void, Never>?
+    private var insertedLocationCount = 0
+    private var didFinishRoute = false
+
+    enum RouteResult: CustomStringConvertible {
+        case saved(accepted: Int, inserted: Int)
+        case failed(reason: String, accepted: Int, inserted: Int)
+
+        var description: String {
+            switch self {
+            case .saved(let accepted, let inserted):
+                "saved; accepted=\(accepted), inserted=\(inserted)"
+            case .failed(let reason, let accepted, let inserted):
+                "not saved (\(reason)); accepted=\(accepted), inserted=\(inserted)"
+            }
+        }
+    }
 
     init(routeBuilder: HKWorkoutRouteBuilder, startDate: Date) {
         self.routeBuilder = routeBuilder
@@ -103,6 +119,37 @@ final class WorkoutRouteRecorder: NSObject, CLLocationManagerDelegate {
         await drainTask?.value
     }
 
+    /// The SDK requires a saved workout for a standalone route builder.
+    /// Route errors never invalidate or delete that workout.
+    func finishRoute(with workout: HKWorkout) async -> RouteResult {
+        let accepted = seenLocations.count
+        guard endDate != nil, !didFinishRoute else {
+            return .failed(reason: "invalid finalization state", accepted: accepted,
+                           inserted: insertedLocationCount)
+        }
+        didFinishRoute = true
+        await drainTask?.value
+        guard !insertionAbandoned else {
+            return .failed(reason: "route insert timed out", accepted: accepted,
+                           inserted: insertedLocationCount)
+        }
+        guard insertedLocationCount > 0 else {
+            let reason = insertionError == nil
+                ? "no accepted GPS points; location authorization \(manager.authorizationStatus.rawValue), services \(CLLocationManager.locationServicesEnabled())"
+                : "route insert failed"
+            return .failed(reason: reason,
+                           accepted: accepted, inserted: 0)
+        }
+        do {
+            let _: HKWorkoutRoute = try await routeBuilder.finishRoute(with: workout, metadata: nil)
+            return .saved(accepted: accepted, inserted: insertedLocationCount)
+        } catch {
+            let failure = error as NSError
+            return .failed(reason: "HealthKit \(failure.domain) code \(failure.code)",
+                           accepted: accepted, inserted: insertedLocationCount)
+        }
+    }
+
     nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         Task { @MainActor [weak self] in
             guard let self, self.started, self.endDate == nil else { return }
@@ -156,6 +203,7 @@ final class WorkoutRouteRecorder: NSObject, CLLocationManagerDelegate {
             guard insertionError == nil, !insertionAbandoned else { return }
             do {
                 try await routeBuilder.insertRouteData(batch)
+                insertedLocationCount += batch.count
             } catch {
                 insertionError = error
                 manager.stopUpdatingLocation()
