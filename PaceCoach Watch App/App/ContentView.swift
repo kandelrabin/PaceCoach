@@ -8,6 +8,9 @@
 import SwiftUI
 
 struct ContentView: View {
+    @Environment(\.scenePhase) private var scenePhase
+    @StateObject private var stravaStatus = StravaStatusModel()
+
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -33,14 +36,26 @@ struct ContentView: View {
                     }
 
                     NavigationLink {
+                        StravaStatusView(model: stravaStatus)
+                    } label: {
+                        modeLabel(
+                            title: "Strava",
+                            subtitle: stravaStatus.presentation.homeSubtitle,
+                            symbol: stravaStatus.presentation.summary.symbol
+                        )
+                    }
+
+                    #if DEBUG
+                    NavigationLink {
                         CompanionTestView()
                     } label: {
                         modeLabel(
-                            title: "iPhone Companion",
-                            subtitle: "Check the Watch connection",
-                            symbol: "iphone.gen3.radiowaves.left.and.right"
+                            title: "Developer Tools",
+                            subtitle: "Connection and upload diagnostics",
+                            symbol: "wrench.and.screwdriver"
                         )
                     }
+                    #endif
                 }
                 .buttonStyle(.plain)
                 .padding(.horizontal, 8)
@@ -50,6 +65,9 @@ struct ContentView: View {
         }
         .tint(PaceTheme.accent)
         .preferredColorScheme(.dark)
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { stravaStatus.refresh() }
+        }
     }
 
     private func modeLabel(title: String, subtitle: String, symbol: String) -> some View {

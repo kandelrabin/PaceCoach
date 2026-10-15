@@ -1,3 +1,4 @@
+#if DEBUG
 import Combine
 import Foundation
 import HealthKit
@@ -117,3 +118,4 @@ final class ManualStravaUploadFlow: ObservableObject {
         }
     }
 }
+#endif

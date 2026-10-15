@@ -7,8 +7,10 @@ final class CompanionConnectivity: NSObject, ObservableObject, WCSessionDelegate
     static let shared = CompanionConnectivity()
 
     @Published private(set) var status = "Starting Watch connection…"
+    #if DEBUG || os(iOS)
     @Published private(set) var lastResult: String?
     @Published private(set) var lastReceivedPing: String?
+    #endif
     @Published private(set) var stravaProvisioningStatus = "Strava is not set up on this Watch."
 
     private static let provisioningKind = "pacecoach.strava.provision.v1"
@@ -82,6 +84,8 @@ final class CompanionConnectivity: NSObject, ObservableObject, WCSessionDelegate
     }
     #endif
 
+    // Keep the iPhone companion unchanged in this Watch-only cleanup stage.
+    #if DEBUG || os(iOS)
     func sendTestMessage() {
         let session = WCSession.default
         guard session.activationState == .activated else {
@@ -110,6 +114,7 @@ final class CompanionConnectivity: NSObject, ObservableObject, WCSessionDelegate
             }
         }
     }
+    #endif
 
     func session(
         _ session: WCSession,
@@ -131,6 +136,7 @@ final class CompanionConnectivity: NSObject, ObservableObject, WCSessionDelegate
         }
     }
 
+    #if DEBUG || os(iOS)
     func session(
         _ session: WCSession,
         didReceiveMessage message: [String: Any],
@@ -146,6 +152,7 @@ final class CompanionConnectivity: NSObject, ObservableObject, WCSessionDelegate
         }
         replyHandler(["kind": "pacecoach.test.pong", "nonce": nonce])
     }
+    #endif
 
     func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any]) {
         #if os(iOS)

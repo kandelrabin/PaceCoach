@@ -1,3 +1,4 @@
+#if DEBUG
 import HealthKit
 import SwiftUI
 
@@ -10,7 +11,7 @@ struct CompanionTestView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
-                Text("iPhone Companion")
+                Text("Developer Tools")
                     .font(.headline)
                 Text(connectivity.status)
                     .font(.footnote)
@@ -135,3 +136,4 @@ struct CompanionTestView: View {
         }
     }
 }
+#endif

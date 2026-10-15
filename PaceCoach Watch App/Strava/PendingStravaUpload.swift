@@ -108,6 +108,16 @@ struct PendingStravaUpload: Codable, Equatable {
 struct PendingStravaUploadStore {
     enum StoreError: Error { case documentsUnavailable, invalidRecord }
 
+    /// Presentation observes successful writes without owning or starting upload work.
+    static let didChangeNotification = Notification.Name("PaceCoach.StravaUploadLedgerDidChange")
+
+    struct PresentationSnapshot: Equatable {
+        let records: [PendingStravaUpload]
+        let isUnavailable: Bool
+
+        static let unavailable = PresentationSnapshot(records: [], isUnavailable: true)
+    }
+
     let directory: URL
     private let fileManager: FileManager
 
@@ -152,6 +162,48 @@ struct PendingStravaUploadStore {
         try records().filter(\.isPostEligible)
     }
 
+    /// A separate, strictly read-only path: never creates records, recovers an
+    /// interrupted POST, repairs files, or silently hides unreadable state.
+    func presentationSnapshot() -> PresentationSnapshot {
+        do {
+            do {
+                _ = try fileManager.attributesOfItem(atPath: directory.path)
+            } catch let error as CocoaError where error.code == .fileNoSuchFile || error.code == .fileReadNoSuchFile {
+                return PresentationSnapshot(records: [], isUnavailable: false)
+            }
+            let urls = try fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            var readable: [PendingStravaUpload] = []
+            var isUnavailable = false
+            for url in urls where url.pathExtension == "json" {
+                if url.lastPathComponent == "status-policy.json" {
+                    // Policy is not an upload, but unreadable policy blocks reconciliation.
+                    do {
+                        _ = try JSONDecoder().decode(StatusPolicy.self, from: Data(contentsOf: url))
+                    } catch {
+                        isUnavailable = true
+                    }
+                    continue
+                }
+                guard let runID = UUID(uuidString: url.deletingPathExtension().lastPathComponent),
+                      url.lastPathComponent == runID.uuidString.lowercased() + ".json" else {
+                    isUnavailable = true
+                    continue
+                }
+                do {
+                    // Read directly so a disappearing/unreadable entry cannot look empty.
+                    let record = try JSONDecoder().decode(PendingStravaUpload.self, from: Data(contentsOf: url))
+                    guard record.runID == runID else { throw StoreError.invalidRecord }
+                    readable.append(record)
+                } catch {
+                    isUnavailable = true
+                }
+            }
+            return PresentationSnapshot(records: readable, isUnavailable: isUnavailable)
+        } catch {
+            return .unavailable
+        }
+    }
+
     /// Call at process startup, before any submitter can own an in-flight POST.
     func recoverInterruptedSubmissions() throws {
         for var record in try records() where record.phase == .submitting {
@@ -163,6 +215,7 @@ struct PendingStravaUploadStore {
     func save(_ record: PendingStravaUpload) throws {
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         try JSONEncoder().encode(record).write(to: fileURL(for: record.runID), options: .atomic)
+        NotificationCenter.default.post(name: Self.didChangeNotification, object: directory)
     }
 
     /// Separate non-secret policy file: shared status pacing/rate limits must
@@ -178,6 +231,7 @@ struct PendingStravaUploadStore {
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         try JSONEncoder().encode(StatusPolicy(notBefore: deadline))
             .write(to: directory.appendingPathComponent("status-policy.json"), options: .atomic)
+        NotificationCenter.default.post(name: Self.didChangeNotification, object: directory)
     }
 
     private struct StatusPolicy: Codable { let notBefore: Date }
