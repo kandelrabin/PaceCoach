@@ -32,12 +32,12 @@ final class WatchStravaUploadService {
         _ = try await send(StravaUploadAPI.preflightRequest())
     }
 
-    func checkStatus(uploadID: String) async throws -> StravaUploadStatus {
+    func checkStatus(uploadID: String) async throws -> StravaStatusCheckResponse {
         let token = try await WatchStravaTokenService.shared.validAccessToken().value
         let request = try StravaUploadAPI.statusRequest(uploadID: uploadID, accessToken: token)
         let (data, response) = try await send(request)
-        return try StravaUploadAPI.decode(data, httpStatus: response.statusCode,
-                                          submitted: false, expectedUploadID: uploadID)
+        return try StravaUploadAPI.decodeStatusResponse(data, response: response,
+                                                        uploadID: uploadID, now: Date())
     }
 
     private func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {

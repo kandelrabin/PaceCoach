@@ -37,7 +37,9 @@ struct StravaUploadChecks {
         let checkRequest = try StravaUploadAPI.statusRequest(uploadID: "123", accessToken: "secret-test-token")
         check(checkRequest.url?.absoluteString == "https://www.strava.com/api/v3/uploads/123", "status URL")
         check(checkRequest.httpMethod == "GET", "status method")
+        check(checkRequest.httpBody == nil && checkRequest.cachePolicy == .reloadIgnoringLocalCacheData, "status GET has no upload body and bypasses cached status")
         expect(.invalidResponse) { try StravaUploadAPI.statusRequest(uploadID: "../123", accessToken: "secret-test-token") }
+        rateLimits()
 
         let accepted = try decode(#"{"id":123,"id_str":"123","external_id":"pacecoach-test.tcx","error":null,"status":"Your activity is still being processed.","activity_id":null}"#, 201, true)
         check(accepted.uploadID == "123" && accepted.state == .accepted, "201 means accepted")
@@ -84,5 +86,35 @@ struct StravaUploadChecks {
         } catch {
             preconditionFailure("Unexpected error \(error)")
         }
+    }
+
+    private static func rateLimits() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let quarter = Date(timeIntervalSince1970: (floor(now.timeIntervalSince1970 / 900) + 1) * 900 + 1)
+        let midnight = Date(timeIntervalSince1970: (floor(now.timeIntervalSince1970 / 86400) + 1) * 86400 + 1)
+        func deadline(_ code: Int = 200, _ headers: [String: String] = [:]) -> Date? {
+            let response = HTTPURLResponse(url: URL(string: "https://example.invalid/uploads/1")!, statusCode: code, httpVersion: nil, headerFields: headers)!
+            return StravaUploadAPI.statusRetryNotBefore(response: response, now: now)
+        }
+        check(deadline() == nil, "missing headers on success do not invent a limit")
+        check(deadline(200, ["X-RateLimit-Limit": "200,2000", "X-RateLimit-Usage": "199,1999"]) == nil, "available overall budget")
+        check(deadline(200, ["X-RateLimit-Limit": "200,2000", "X-RateLimit-Usage": "200,1999"]) == quarter, "HTTP 200 can exhaust quarter-hour budget")
+        check(deadline(200, ["X-ReadRateLimit-Limit": "100,1000", "X-ReadRateLimit-Usage": "1,1000"]) == midnight, "read daily budget defers to UTC midnight")
+        check(deadline(429, ["X-RateLimit-Limit": "200,2000", "X-RateLimit-Usage": "201,2001"]) == midnight, "daily exhaustion takes precedence over quarter")
+        check(deadline(429) == midnight, "headerless 429 conservatively permits daily exhaustion")
+        check(deadline(429, ["X-RateLimit-Limit": "bad", "X-RateLimit-Usage": "bad"]) == midnight, "malformed quota headers fail conservatively")
+        check(deadline(429, ["X-RateLimit-Limit": "100,bad,1000", "X-RateLimit-Usage": "1,bad,1"]) == midnight, "three-component quota headers rejected")
+        check(deadline(429, ["X-RateLimit-Limit": "100,,1000", "X-RateLimit-Usage": "1,,1"]) == midnight, "empty quota component cannot be compacted away")
+        check(deadline(429, ["Retry-After": "120"]) == now + 120, "Retry-After seconds honored")
+        check(deadline(429, ["Retry-After": "0"]) == midnight, "zero Retry-After cannot bypass unknown quota exhaustion")
+        check(deadline(429, ["Retry-After": "-1"]) == midnight, "negative Retry-After rejected")
+        check(deadline(429, ["Retry-After": "inf"]) == midnight, "nonfinite Retry-After rejected")
+        check(deadline(429, ["Retry-After": "Wed, 15 Nov 2023 00:00:00 GMT"]) == Date(timeIntervalSince1970: 1_700_006_400), "HTTP-date Retry-After parsed in UTC")
+        check(deadline(429, ["Retry-After": "Mon, 13 Nov 2023 00:00:00 GMT"]) == midnight, "expired Retry-After cannot bypass quota fallback")
+        check(deadline(200, ["X-RateLimit-Limit": "200,2000", "X-RateLimit-Usage": "200,100", "X-ReadRateLimit-Limit": "100,1000", "X-ReadRateLimit-Usage": "99,1000"]) == midnight, "both read and overall budgets constrain status recovery")
+        let server = HTTPURLResponse(url: URL(string: "https://example.invalid")!, statusCode: 503, httpVersion: nil, headerFields: ["Retry-After": "3600"])!
+        expect(.statusDeferred(until: now + 3600)) { try StravaUploadAPI.decodeStatusResponse(Data(), response: server, uploadID: "1", now: now) }
+        let exhausted = HTTPURLResponse(url: URL(string: "https://example.invalid")!, statusCode: 200, httpVersion: nil, headerFields: ["X-ReadRateLimit-Limit": "100,1000", "X-ReadRateLimit-Usage": "20,1000"])!
+        expect(.statusDeferred(until: midnight)) { try StravaUploadAPI.decodeStatusResponse(Data("malformed".utf8), response: exhausted, uploadID: "1", now: now) }
     }
 }

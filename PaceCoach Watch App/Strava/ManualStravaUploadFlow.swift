@@ -42,7 +42,7 @@ final class ManualStravaUploadFlow: ObservableObject {
                 return
             }
             guard let store else { throw PendingStravaUploadStore.StoreError.documentsUnavailable }
-            let record = try store.loadOrCreate(runID: runID)
+            let record = try store.loadOrCreate(runID: runID, workoutStartDate: workout.startDate)
             selectedWorkout = workout
             selectedRunID = runID
             upload = record
@@ -90,24 +90,13 @@ final class ManualStravaUploadFlow: ObservableObject {
     }
 
     func checkStatus() async {
-        guard !isBusy, let current = upload, current.canCheckStatus,
-              let uploadID = current.uploadID, let store else { return }
+        guard !isBusy, let runID = selectedRunID else { return }
         isBusy = true
         defer { isBusy = false }
         message = "Checking Strava processing status…"
-        do {
-            let status = try await WatchStravaUploadService.shared.checkStatus(uploadID: uploadID)
-            var updated = current
-            updated.receive(status)
-            #if DEBUG
-            AutomaticStravaUploadFlow.shared.traceStatusResponse(runID: current.runID, record: updated, response: status)
-            #endif
-            try store.save(updated)
-            upload = updated
-            message = "Strava status updated."
-        } catch {
-            message = "Could not save or check Strava status. Check again later; no TCX was reposted."
-        }
+        let result = await AutomaticStravaUploadFlow.shared.reconcileManually(runID: runID)
+        upload = result.record
+        message = result.message
     }
 
     private func savedRunningWorkouts() async throws -> [HKWorkout] {

@@ -5,6 +5,7 @@ enum StravaUploadError: Error, Equatable {
     case httpStatus(Int)
     case duplicate
     case network
+    case statusDeferred(until: Date)
 }
 
 struct StravaUploadStatus: Equatable {
@@ -20,6 +21,11 @@ struct StravaUploadStatus: Equatable {
     let externalID: String?
     let statusText: String?
     let state: State
+}
+
+struct StravaStatusCheckResponse {
+    let status: StravaUploadStatus
+    let retryNotBefore: Date?
 }
 
 /// Pure request and response handling shared by the Watch client and checks.
@@ -74,6 +80,64 @@ enum StravaUploadAPI {
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         return request
+    }
+
+    /// Strava resets short limits on UTC quarter hours and daily limits at
+    /// midnight UTC. Inspect both overall and read budgets, even on HTTP 200.
+    static func statusRetryNotBefore(response: HTTPURLResponse, now: Date) -> Date? {
+        let quarter = Date(timeIntervalSince1970: (floor(now.timeIntervalSince1970 / 900) + 1) * 900 + 1)
+        let midnight = Date(timeIntervalSince1970: (floor(now.timeIntervalSince1970 / 86400) + 1) * 86400 + 1)
+        var deadlines: [Date] = []
+        var hasBudgets = false
+        for prefix in ["X-RateLimit", "X-ReadRateLimit"] {
+            func pair(_ suffix: String) -> [Int]? {
+                guard let value = response.value(forHTTPHeaderField: prefix + suffix) else { return nil }
+                let parts = value.split(separator: ",", omittingEmptySubsequences: false)
+                guard parts.count == 2,
+                      let short = Int(parts[0].trimmingCharacters(in: .whitespaces)),
+                      let daily = Int(parts[1].trimmingCharacters(in: .whitespaces)),
+                      short >= 0, daily >= 0 else { return nil }
+                return [short, daily]
+            }
+            if let limit = pair("-Limit"), let usage = pair("-Usage"), limit.allSatisfy({ $0 > 0 }) {
+                hasBudgets = true
+                if usage[0] >= limit[0] { deadlines.append(quarter) }
+                if usage[1] >= limit[1] { deadlines.append(midnight) }
+            }
+        }
+        if let retry = response.value(forHTTPHeaderField: "Retry-After") {
+            if let seconds = TimeInterval(retry), seconds.isFinite, seconds >= 0 {
+                deadlines.append(now.addingTimeInterval(seconds))
+            } else {
+                let formatter = DateFormatter()
+                formatter.locale = Locale(identifier: "en_US_POSIX")
+                formatter.timeZone = TimeZone(secondsFromGMT: 0)
+                formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+                if let date = formatter.date(from: retry) { deadlines.append(date) }
+            }
+        }
+        deadlines = deadlines.filter { $0 > now }
+        if response.statusCode == 429 {
+            // Without valid quota headers a daily limit cannot be ruled out.
+            if deadlines.isEmpty { deadlines.append(hasBudgets ? quarter : midnight) }
+            deadlines.append(now.addingTimeInterval(30))
+        }
+        return deadlines.max()
+    }
+
+    static func decodeStatusResponse(_ data: Data, response: HTTPURLResponse,
+                                     uploadID: String, now: Date) throws -> StravaStatusCheckResponse {
+        let deadline = statusRetryNotBefore(response: response, now: now)
+        do {
+            let status = try decode(data, httpStatus: response.statusCode,
+                                    submitted: false, expectedUploadID: uploadID)
+            return StravaStatusCheckResponse(status: status, retryNotBefore: deadline)
+        } catch {
+            // Quota/Retry-After evidence is authoritative even when the status
+            // body is malformed or the response is a server failure.
+            if let deadline { throw StravaUploadError.statusDeferred(until: deadline) }
+            throw error
+        }
     }
 
     static func decode(_ data: Data, httpStatus: Int, submitted: Bool, expectedUploadID: String? = nil) throws -> StravaUploadStatus {

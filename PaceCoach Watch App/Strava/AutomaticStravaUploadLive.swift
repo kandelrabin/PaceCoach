@@ -24,6 +24,9 @@ extension AutomaticStravaUploadFlow {
         submitRequest: { request in
             try await WatchStravaUploadService.shared.submitPrepared(request)
         },
+        checkStatus: { uploadID in
+            try await WatchStravaUploadService.shared.checkStatus(uploadID: uploadID)
+        },
         resolveWorkouts: { runIDs in
             let predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
                 HKQuery.predicateForWorkouts(with: .running),

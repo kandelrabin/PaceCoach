@@ -4,8 +4,9 @@ import HealthKit
 import os
 #endif
 
-/// One process-owned queue and submission gate for End Run, foreground recovery,
-/// and the manual development controls. The durable ledger remains authoritative.
+/// One process-owned foreground queue and per-run ownership gate for End Run,
+/// recovery, and manual controls. Known uploads use a separate GET operation;
+/// the durable ledger remains authoritative for both operations.
 @MainActor
 final class AutomaticStravaUploadFlow {
     enum Trigger: String {
@@ -28,6 +29,7 @@ final class AutomaticStravaUploadFlow {
     private let prepareRequest: (URL, UUID) async throws -> URLRequest
     private let preflight: () async throws -> Void
     private let submitRequest: (URLRequest) async throws -> StravaUploadStatus
+    private let checkStatus: ((String) async throws -> StravaStatusCheckResponse)?
     private let resolveWorkouts: ([UUID]) async throws -> [HKWorkout]
     private let acceptedSources: Set<String>
     private let now: () -> Date
@@ -35,11 +37,13 @@ final class AutomaticStravaUploadFlow {
     private var recovered = false
     private var knownWorkouts: [UUID: HKWorkout] = [:]
     private var inFlightRunIDs = Set<UUID>()
+    private var statusRequestInFlight = false
     private var drainTask: Task<Void, Never>?
     private var retryTask: Task<Void, Never>?
     private var retryGeneration = UUID()
     private var rescanRequested = false
     private var notBefore: Date?
+    private var statusNotBefore: Date?
     private var backoffStep = 0
     private(set) var isActive: Bool
     private(set) var scheduledRetryDelay: TimeInterval?
@@ -50,6 +54,7 @@ final class AutomaticStravaUploadFlow {
         prepareRequest: @escaping (URL, UUID) async throws -> URLRequest,
         preflight: @escaping () async throws -> Void,
         submitRequest: @escaping (URLRequest) async throws -> StravaUploadStatus,
+        checkStatus: ((String) async throws -> StravaStatusCheckResponse)? = nil,
         resolveWorkouts: @escaping ([UUID]) async throws -> [HKWorkout] = { _ in [] },
         acceptedSources: Set<String>? = nil,
         initiallyActive: Bool = true,
@@ -63,6 +68,7 @@ final class AutomaticStravaUploadFlow {
         self.prepareRequest = prepareRequest
         self.preflight = preflight
         self.submitRequest = submitRequest
+        self.checkStatus = checkStatus
         self.resolveWorkouts = resolveWorkouts
         self.acceptedSources = acceptedSources ?? PaceCoachSavedRunSelection.acceptedSourceBundleIDs
         self.isActive = initiallyActive
@@ -95,7 +101,7 @@ final class AutomaticStravaUploadFlow {
         do {
             let existing = try store.load(runID: runID)
             trace("registration-ledger", trigger: .endRun, runID: runID, record: existing)
-            let registered = try store.loadOrCreate(runID: runID)
+            let registered = try store.loadOrCreate(runID: runID, workoutStartDate: savedWorkout.startDate)
             guard registered.isPostEligible else { return nil }
             guard knownWorkouts[runID] == nil else { return nil }
             knownWorkouts[runID] = savedWorkout
@@ -122,7 +128,9 @@ final class AutomaticStravaUploadFlow {
             trace("drain-coalesced", trigger: trigger)
             return drainTask
         }
-        if let notBefore, now() < notBefore {
+        let postCoolingDown = notBefore.map { now() < $0 } ?? false
+        let onlyStatusWork = retryTask != nil && (try? store?.eligibleRecords().isEmpty) == true
+        if (postCoolingDown || onlyStatusWork), !hasDueStatusChecks() {
             trace("trigger-cooldown", trigger: trigger)
             return nil
         }
@@ -131,7 +139,8 @@ final class AutomaticStravaUploadFlow {
         let task = Task(priority: .utility) { [self] in
             repeat {
                 rescanRequested = false
-                let stop = await drainOnce(trigger: trigger)
+                var stop = await drainOnce(trigger: trigger)
+                if !stop { stop = await drainStatusChecks(trigger: trigger) }
                 if stop { break }
             } while isActive && rescanRequested
             drainTask = nil
@@ -144,6 +153,14 @@ final class AutomaticStravaUploadFlow {
 
     func submitManually(runID: UUID, tcxFile: URL) async -> SubmissionResult {
         let result = await attempt(runID: runID, workout: nil, file: tcxFile, trigger: .manual)
+        if drainTask == nil { scheduleRetryIfNeeded() }
+        return result
+    }
+
+    /// Uses the same durable-state/ownership checks as automatic reconciliation.
+    /// A stale development view can neither regress a terminal record nor POST.
+    func reconcileManually(runID: UUID) async -> SubmissionResult {
+        let result = await reconcile(runID: runID, trigger: .manual, ownsBatch: false)
         if drainTask == nil { scheduleRetryIfNeeded() }
         return result
     }
@@ -164,14 +181,23 @@ final class AutomaticStravaUploadFlow {
 
     private func drainOnce(trigger: Trigger) async -> Bool {
         guard isActive, let store else { return true }
+        if let notBefore, now() < notBefore { return false }
         let records: [PendingStravaUpload]
         let resolved: [HKWorkout]
         do {
             records = try store.eligibleRecords()
             guard !records.isEmpty else { return false }
+        } catch { return true }
+        // Consume the POST opportunity here, never when a status GET happens
+        // to finish after the POST deadline. Each queue owns its own backoff.
+        notBefore = nil
+        do {
             let missing = records.map(\.runID).filter { knownWorkouts[$0] == nil }
             resolved = missing.isEmpty ? [] : try await resolveWorkouts(missing)
-        } catch { return true }
+        } catch {
+            // Protected/unavailable Health data affects export, not known-ID GETs.
+            return false
+        }
         guard isActive else { return true }
 
         var queue: [(UUID, HKWorkout)] = []
@@ -265,6 +291,7 @@ final class AutomaticStravaUploadFlow {
             trace("post-dispatch", trigger: trigger, runID: runID, record: current)
             let status = try await submitRequest(request)
             current.receive(status)
+            current.deferInitialStatusCheck(at: now())
             trace("post-response", trigger: trigger, runID: runID, record: current, response: status)
         } catch {
             switch error as? StravaUploadError {
@@ -283,7 +310,7 @@ final class AutomaticStravaUploadFlow {
             trace("result-persisted", trigger: trigger, runID: runID, record: current)
             let message = current.phase == .outcomeUnknown
                 ? "Outcome unknown: the request may have reached Strava. Do not submit again."
-                : "Strava response saved. Check status manually if processing continues."
+                : "Strava response saved. Processing status will be checked while PaceCoach is active."
             return SubmissionResult(record: current, message: message, stopQueue: stopQueue)
         } catch {
             trace("result-persist-failed", trigger: trigger, runID: runID, record: current)
@@ -308,6 +335,122 @@ final class AutomaticStravaUploadFlow {
         SubmissionResult(record: nil, message: "Upload deferred; no POST was sent.", stopQueue: false)
     }
 
+    private func statusDeadline() throws -> Date? {
+        guard checkStatus != nil, let store else { return nil }
+        let records = try store.records().filter(\.canCheckStatus)
+        guard !records.isEmpty else { return nil }
+        let shared = try sharedStatusDeadline()
+        return records.map { max($0.nextStatusCheckAt ?? now(), shared) }.min()
+    }
+
+    private func sharedStatusDeadline() throws -> Date {
+        max(try store?.statusNotBefore() ?? .distantPast, statusNotBefore ?? .distantPast)
+    }
+
+    private func deferStatusChecks(until deadline: Date) throws {
+        // A storage failure must not cause a one-second retry loop against the
+        // same unwritable file. Preserve pacing in this process even if the
+        // durable policy cannot be updated; dispatch still fails closed.
+        statusNotBefore = max(statusNotBefore ?? .distantPast, deadline)
+        try store?.deferStatusChecks(until: deadline)
+    }
+
+    private func hasDueStatusChecks() -> Bool {
+        guard let deadline = try? statusDeadline() else { return false }
+        return deadline <= now()
+    }
+
+    private func drainStatusChecks(trigger: Trigger) async -> Bool {
+        guard isActive, checkStatus != nil, let store, !statusRequestInFlight else { return false }
+        do {
+            guard try sharedStatusDeadline() <= now() else { return false }
+            let due = try store.records().filter {
+                $0.canCheckStatus && ($0.nextStatusCheckAt ?? .distantPast) <= now()
+            }.sorted {
+                // Least-recent attempt prevents an old processing/error record
+                // from starving unattempted records in a bounded batch.
+                if $0.lastStatusAttemptAt != $1.lastStatusAttemptAt {
+                    return ($0.lastStatusAttemptAt ?? .distantPast) < ($1.lastStatusAttemptAt ?? .distantPast)
+                }
+                if $0.workoutStartDate != $1.workoutStartDate {
+                    return ($0.workoutStartDate ?? .distantPast) < ($1.workoutStartDate ?? .distantPast)
+                }
+                return $0.runID.uuidString < $1.runID.uuidString
+            }
+            for record in due.prefix(3) {
+                guard isActive else { return true }
+                let result = await reconcile(runID: record.runID, trigger: trigger, ownsBatch: true)
+                if result.stopQueue { return true }
+            }
+            return false
+        } catch {
+            trace("status-policy-or-ledger-failed", trigger: trigger)
+            return true
+        }
+    }
+
+    /// This operation has no path to export, preflight, prepare, or submit.
+    /// Persist attempt timing before GET, then reread after its suspension point.
+    private func reconcile(runID: UUID, trigger: Trigger, ownsBatch: Bool) async -> SubmissionResult {
+        let latest = try? store?.load(runID: runID)
+        guard recovered, isActive, let store, let checkStatus,
+              !inFlightRunIDs.contains(runID), !statusRequestInFlight else {
+            return SubmissionResult(record: latest, message: "Status check deferred or already running.", stopQueue: false)
+        }
+        inFlightRunIDs.insert(runID)
+        statusRequestInFlight = true
+        defer {
+            inFlightRunIDs.remove(runID)
+            statusRequestInFlight = false
+        }
+        do {
+            guard var current = try store.load(runID: runID), current.canCheckStatus,
+                  let uploadID = current.uploadID else {
+                return SubmissionResult(record: latest, message: "Saved status needs no processing check.", stopQueue: false)
+            }
+            let sharedDeadline = try sharedStatusDeadline()
+            guard ownsBatch || sharedDeadline <= now(),
+                  current.beginStatusCheck(at: now()) else {
+                return SubmissionResult(record: current, message: "Status check deferred until a later foreground opportunity.", stopQueue: false)
+            }
+            try store.save(current)
+            // One bounded batch per 30 seconds, including manual checks. A
+            // relaunch cannot skip pacing by selecting another persisted run.
+            try deferStatusChecks(until: now().addingTimeInterval(30))
+            trace("status-get-dispatch", trigger: trigger, runID: runID, record: current)
+            let response = try await checkStatus(uploadID)
+            guard response.status.uploadID == uploadID else { throw StravaUploadError.invalidResponse }
+            guard var updated = try store.load(runID: runID) else { throw PendingStravaUploadStore.StoreError.invalidRecord }
+            // Do not overwrite a terminal result or a different upload identity.
+            if updated.canCheckStatus && updated.uploadID == uploadID {
+                updated.receive(response.status)
+                try store.save(updated)
+            }
+            trace("status-result-persisted", trigger: trigger, runID: runID, record: updated, response: response.status)
+            if let deadline = response.retryNotBefore, deadline > now() {
+                try deferStatusChecks(until: deadline)
+                return SubmissionResult(record: updated, message: "Strava status saved; further checks are deferred by its rate limit.", stopQueue: true)
+            }
+            return SubmissionResult(record: updated, message: "Strava status updated.", stopQueue: false)
+        } catch {
+            let sharedDelay: TimeInterval?
+            switch error as? StravaUploadError {
+            case .statusDeferred(let deadline): sharedDelay = max(30, deadline.timeIntervalSince(now()))
+            case .network: sharedDelay = 60
+            case .httpStatus(let code) where code == 401 || code == 403: sharedDelay = 300
+            case .httpStatus(let code) where code == 429 || code >= 500: sharedDelay = 300
+            case .invalidResponse, .duplicate, .httpStatus: sharedDelay = nil
+            default: sharedDelay = 60 // Includes token refresh, protected Keychain, and persistence failures.
+            }
+            if let sharedDelay { try? deferStatusChecks(until: now().addingTimeInterval(sharedDelay)) }
+            let record = try? store.load(runID: runID)
+            trace("status-get-deferred", trigger: trigger, runID: runID, record: record)
+            return SubmissionResult(record: record,
+                                    message: "Could not save or check Strava status. Check later; no TCX was reposted.",
+                                    stopQueue: sharedDelay != nil)
+        }
+    }
+
     private func cancelRetry() {
         retryGeneration = UUID()
         retryTask?.cancel()
@@ -316,17 +459,33 @@ final class AutomaticStravaUploadFlow {
     }
 
     private func scheduleRetryIfNeeded() {
-        guard isActive, let store, (try? store.eligibleRecords().isEmpty) == false else {
+        guard isActive, let store else {
             cancelRetry()
-            notBefore = nil
-            backoffStep = 0
             return
         }
-        guard retryTask == nil else { return }
-        let delays: [TimeInterval] = [30, 60, 120, 300]
-        let delay = delays[min(backoffStep, delays.count - 1)]
-        backoffStep = min(backoffStep + 1, delays.count - 1)
-        notBefore = now().addingTimeInterval(delay)
+        var deadlines: [Date] = []
+        if (try? store.eligibleRecords().isEmpty) == false {
+            if notBefore == nil {
+                let delays: [TimeInterval] = [30, 60, 120, 300]
+                notBefore = now().addingTimeInterval(delays[min(backoffStep, delays.count - 1)])
+                backoffStep = min(backoffStep + 1, delays.count - 1)
+            }
+            deadlines.append(notBefore!)
+        } else {
+            notBefore = nil
+            backoffStep = 0
+        }
+        do {
+            // A manual GET schedules again after releasing ownership. Do not
+            // re-arm an overdue status timer every second while it is awaited.
+            if !statusRequestInFlight, let deadline = try statusDeadline() { deadlines.append(deadline) }
+        } catch {
+            // Unreadable policy fails closed; do not spin trying to repair it.
+            deadlines.append(now().addingTimeInterval(300))
+        }
+        guard let deadline = deadlines.min() else { cancelRetry(); return }
+        let delay = max(1, deadline.timeIntervalSince(now()))
+        cancelRetry()
         scheduledRetryDelay = delay
         let generation = retryGeneration
         let sleep = self.sleep
@@ -336,16 +495,9 @@ final class AutomaticStravaUploadFlow {
                   self.retryGeneration == generation else { return }
             self.retryTask = nil
             self.scheduledRetryDelay = nil
-            self.notBefore = nil
             self.requestRetry(trigger: .foregroundTimer)
         }
     }
-
-    #if DEBUG
-    func traceStatusResponse(runID: UUID, record: PendingStravaUpload, response: StravaUploadStatus) {
-        trace("status-response", trigger: .manual, runID: runID, record: record, response: response)
-    }
-    #endif
 
     /// Log only identities and phase tags, never requests, error text, or workout data.
     private func trace(_ event: String, trigger: Trigger, runID: UUID? = nil,
