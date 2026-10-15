@@ -7,29 +7,38 @@ struct PaceCoachCompanionApp: App {
     var body: some Scene {
         WindowGroup {
             ScrollView {
-                VStack(spacing: 20) {
-                    Image(systemName: "applewatch")
-                        .font(.largeTitle)
-                    Text("PaceCoach companion installed")
-                        .font(.title2.bold())
-                        .multilineTextAlignment(.center)
+                VStack(alignment: .leading, spacing: 24) {
+                    Text("PaceCoach")
+                        .font(.system(.largeTitle, design: .rounded, weight: .bold))
+                        .accessibilityAddTraits(.isHeader)
 
                     StravaConnectionView()
 
-                    Divider()
-                    Text(connectivity.status)
-                        .foregroundStyle(.secondary)
-                    Button("Send test message to Watch") {
-                        connectivity.sendTestMessage()
+                    #if DEBUG
+                    DisclosureGroup("Developer Tools") {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text(connectivity.status)
+                            Text(connectivity.stravaProvisioningStatus)
+                            Button("Send test message to Watch") {
+                                connectivity.sendTestMessage()
+                            }
+                            if let result = connectivity.lastResult {
+                                Text(result)
+                            }
+                        }
+                        .font(.footnote)
+                        .padding(.top, 12)
                     }
-                    if let result = connectivity.lastResult {
-                        Text(result)
-                            .font(.footnote)
-                            .multilineTextAlignment(.center)
-                    }
+                    .foregroundStyle(.secondary)
+                    #endif
                 }
-                .padding()
+                .frame(maxWidth: 560, alignment: .leading)
+                .frame(maxWidth: .infinity)
+                .padding(24)
             }
+            .background(Color.black)
+            .tint(Color("AccentColor"))
+            .preferredColorScheme(.dark)
         }
     }
 }

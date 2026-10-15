@@ -7,7 +7,7 @@ final class CompanionConnectivity: NSObject, ObservableObject, WCSessionDelegate
     static let shared = CompanionConnectivity()
 
     @Published private(set) var status = "Starting Watch connection…"
-    #if DEBUG || os(iOS)
+    #if DEBUG
     @Published private(set) var lastResult: String?
     @Published private(set) var lastReceivedPing: String?
     #endif
@@ -21,7 +21,7 @@ final class CompanionConnectivity: NSObject, ObservableObject, WCSessionDelegate
     private static let progressKey = "stravaProvisioningProgress"
     private var progress: ProvisioningProgress?
 
-    var watchOwnsRefreshToken: Bool { progress?.state == .watchOwned }
+    @Published private(set) var stravaSetupState: StravaCompanionPresentation.WatchSetup?
     #endif
 
     private override init() {
@@ -30,6 +30,7 @@ final class CompanionConnectivity: NSObject, ObservableObject, WCSessionDelegate
         if let data = UserDefaults.standard.data(forKey: Self.progressKey),
            let saved = try? JSONDecoder().decode(ProvisioningProgress.self, from: data) {
             progress = saved
+            stravaSetupState = saved.state
             stravaProvisioningStatus = saved.label
         } else {
             stravaProvisioningStatus = "Apple Watch has not been set up for Strava."
@@ -71,6 +72,7 @@ final class CompanionConnectivity: NSObject, ObservableObject, WCSessionDelegate
 
     private func updateProgress(_ value: ProvisioningProgress) {
         progress = value
+        stravaSetupState = value.state
         stravaProvisioningStatus = value.label
         if let data = try? JSONEncoder().encode(value) {
             UserDefaults.standard.set(data, forKey: Self.progressKey)
@@ -79,13 +81,13 @@ final class CompanionConnectivity: NSObject, ObservableObject, WCSessionDelegate
 
     func invalidateStravaProvisioningStatus() {
         progress = nil
+        stravaSetupState = nil
         stravaProvisioningStatus = "Apple Watch needs Strava setup."
         UserDefaults.standard.removeObject(forKey: Self.progressKey)
     }
     #endif
 
-    // Keep the iPhone companion unchanged in this Watch-only cleanup stage.
-    #if DEBUG || os(iOS)
+    #if DEBUG
     func sendTestMessage() {
         let session = WCSession.default
         guard session.activationState == .activated else {
@@ -136,7 +138,7 @@ final class CompanionConnectivity: NSObject, ObservableObject, WCSessionDelegate
         }
     }
 
-    #if DEBUG || os(iOS)
+    #if DEBUG
     func session(
         _ session: WCSession,
         didReceiveMessage message: [String: Any],
@@ -272,12 +274,7 @@ private enum ProvisioningTransferError: Error {
 }
 
 private struct ProvisioningProgress: Codable {
-    enum State: String, Codable {
-        case pending
-        case ready
-        case failed
-        case watchOwned
-    }
+    typealias State = StravaCompanionPresentation.WatchSetup
 
     let identifier: UUID
     let sequence: Int64

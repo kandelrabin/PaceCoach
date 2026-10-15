@@ -1,6 +1,7 @@
 import AuthenticationServices
 import Combine
 import Foundation
+import OSLog
 import Security
 import UIKit
 
@@ -12,6 +13,7 @@ final class StravaConnection: ObservableObject {
 
     private static let callbackURI = "pacecoach://localhost/strava"
     private let tokenStore = StravaTokenStore()
+    private let logger = Logger(subsystem: "com.rabinkandel.PaceCoach", category: "StravaSetup")
     private var session: ASWebAuthenticationSession?
     private var presentationContext: StravaPresentationContext?
 
@@ -21,7 +23,7 @@ final class StravaConnection: ObservableObject {
                 isConnected = !tokens.refreshToken.isEmpty && tokens.grantsActivityWrite
             }
         } catch {
-            errorMessage = "Could not read the saved Strava connection from Keychain."
+            fail("Couldn’t read your saved Strava connection. Try connecting again.", diagnostic: "Saved connection could not be read")
         }
     }
 
@@ -33,7 +35,7 @@ final class StravaConnection: ObservableObject {
               !StravaCredentials.clientSecret.isEmpty,
               !StravaCredentials.clientID.hasPrefix("YOUR_"),
               !StravaCredentials.clientSecret.hasPrefix("YOUR_") else {
-            errorMessage = "Set your local Strava credentials, then rebuild the iPhone app."
+            fail("Strava connection is currently unavailable. Try again later.", diagnostic: "Missing local OAuth configuration")
             return
         }
 
@@ -41,13 +43,13 @@ final class StravaConnection: ObservableObject {
             .compactMap({ $0 as? UIWindowScene })
             .first(where: { $0.activationState == .foregroundActive })?
             .windows.first(where: \.isKeyWindow) else {
-            errorMessage = "Could not present Strava sign in. Reopen PaceCoach and try again."
+            fail("Couldn’t open Strava sign-in. Reopen PaceCoach and try again.", diagnostic: "No foreground presentation window")
             return
         }
 
         var bytes = [UInt8](repeating: 0, count: 32)
         guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
-            errorMessage = "Could not create a secure sign-in request."
+            fail("Couldn’t start Strava sign-in. Try again.", diagnostic: "Secure state generation failed")
             return
         }
         let expectedState = bytes.map { String(format: "%02x", $0) }.joined()
@@ -62,7 +64,7 @@ final class StravaConnection: ObservableObject {
             URLQueryItem(name: "state", value: expectedState)
         ]
         guard let authorizationURL = components.url else {
-            errorMessage = "Could not prepare Strava sign in."
+            fail("Couldn’t start Strava sign-in. Try again.", diagnostic: "Authorization URL could not be prepared")
             return
         }
 
@@ -83,17 +85,27 @@ final class StravaConnection: ObservableObject {
             self.session = nil
             presentationContext = nil
             isConnecting = false
-            errorMessage = "Could not open Strava sign in. Try again."
+            fail("Couldn’t open Strava sign-in. Try again.", diagnostic: "Authentication session did not start")
         }
     }
 
     func provisionWatch() {
+        // Retry only when setup needs intervention; OAuth uses the fresh-handoff
+        // path below after saving its new credentials.
+        let presentation = StravaCompanionPresentation(isConnected: isConnected,
+                                                       isConnecting: isConnecting,
+                                                       watchSetup: CompanionConnectivity.shared.stravaSetupState)
+        guard presentation.primaryAction == .retryWatchSetup else { return }
+        queueWatchProvisioning()
+    }
+
+    private func queueWatchProvisioning() {
         errorMessage = nil
         do {
             guard isConnected, let tokens = try tokenStore.load(),
                   !tokens.accessToken.isEmpty, !tokens.refreshToken.isEmpty,
                   tokens.expiresAt > 0, tokens.grantsActivityWrite else {
-                errorMessage = "Reconnect Strava on this iPhone before setting up the Watch."
+                fail("Reconnect to Strava on this iPhone, then try Watch setup again.", diagnostic: "Saved connection is missing or invalid")
                 return
             }
             let payload = StravaProvisioningPayload(
@@ -108,14 +120,14 @@ final class StravaConnection: ObservableObject {
                 scope: tokens.scope
             )
             guard payload.isValid else {
-                errorMessage = "Local Strava configuration is incomplete."
+                fail("Strava connection is currently unavailable. Try again later.", diagnostic: "Invalid Watch provisioning payload")
                 return
             }
             try CompanionConnectivity.shared.queueStravaProvisioning(payload)
         } catch StravaTokenStoreError.keychain {
-            errorMessage = "Could not read the saved Strava connection from Keychain."
+            fail("Couldn’t read your saved Strava connection. Try connecting again.", diagnostic: "Saved connection could not be read")
         } catch {
-            errorMessage = "Could not queue Watch setup. Check that the Watch app is installed and try again."
+            fail("Couldn’t finish Apple Watch setup. Check that PaceCoach is installed on your paired Watch, then try again.", diagnostic: "Watch handoff could not be queued")
         }
     }
 
@@ -128,16 +140,16 @@ final class StravaConnection: ObservableObject {
 
         guard let callbackURL else {
             let nsError = error as NSError?
-            errorMessage = nsError?.domain == ASWebAuthenticationSessionErrorDomain
+            let cancelled = nsError?.domain == ASWebAuthenticationSessionErrorDomain
                 && nsError?.code == ASWebAuthenticationSessionError.Code.canceledLogin.rawValue
-                ? "Strava connection was cancelled."
-                : "Strava sign in did not finish. Try again."
+            fail(cancelled ? "Strava connection cancelled." : "Couldn’t complete Strava sign-in. Try again.",
+                 diagnostic: cancelled ? "Authentication session cancelled" : "Authentication session returned no callback")
             return
         }
         guard let parts = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false),
               parts.scheme == "pacecoach", parts.host == "localhost", parts.path == "/strava",
               parts.fragment == nil else {
-            errorMessage = "Strava returned an unexpected callback."
+            fail("Couldn’t complete Strava sign-in. Try again.", diagnostic: "Unexpected OAuth callback components")
             return
         }
 
@@ -147,22 +159,23 @@ final class StravaConnection: ObservableObject {
             return matches.count == 1 ? matches[0].value : nil
         }
         guard uniqueValue("state") == expectedState else {
-            errorMessage = "Strava sign-in state did not match. Try again."
+            fail("Couldn’t complete Strava sign-in. Try again.", diagnostic: "OAuth state mismatch")
             return
         }
         if let denial = uniqueValue("error") {
-            errorMessage = denial == "access_denied"
-                ? "Strava access was declined."
-                : "Strava did not authorize this connection."
+            fail(denial == "access_denied"
+                 ? "Allow PaceCoach to upload activities when connecting to Strava."
+                 : "Couldn’t complete Strava sign-in. Try again.",
+                 diagnostic: "OAuth authorization was declined")
             return
         }
         guard let code = uniqueValue("code"), !code.isEmpty else {
-            errorMessage = "Strava did not return an authorization code."
+            fail("Couldn’t complete Strava sign-in. Try again.", diagnostic: "OAuth code missing or duplicated")
             return
         }
         guard let callbackScope = uniqueValue("scope"),
               Self.hasActivityWrite(callbackScope) else {
-            errorMessage = "Strava did not grant activity upload access."
+            fail("Allow PaceCoach to upload activities when connecting to Strava.", diagnostic: "Upload permission was not granted")
             return
         }
 
@@ -173,16 +186,17 @@ final class StravaConnection: ObservableObject {
             isConnected = true
             errorMessage = nil
             CompanionConnectivity.shared.invalidateStravaProvisioningStatus()
+            queueWatchProvisioning()
         } catch let error as URLError {
-            errorMessage = "Strava is unreachable (network error \(error.code.rawValue)). Try again."
+            fail("Couldn’t connect to Strava. Check your internet connection and try again.", diagnostic: "Token exchange network error \(error.code.rawValue)")
         } catch StravaConnectionError.http(let status) {
-            errorMessage = "Strava rejected the connection (HTTP \(status)). Check the app settings and credentials."
+            fail("Couldn’t connect to Strava. Try again.", diagnostic: "Token exchange HTTP \(status)")
         } catch StravaConnectionError.missingScope {
-            errorMessage = "Strava did not grant activity upload access."
+            fail("Allow PaceCoach to upload activities when connecting to Strava.", diagnostic: "Upload permission was not granted")
         } catch StravaTokenStoreError.keychain {
-            errorMessage = "Strava authorized, but PaceCoach could not save the connection in Keychain."
+            fail("Couldn’t save your Strava connection. Try connecting again.", diagnostic: "Authorized connection could not be saved")
         } catch {
-            errorMessage = "Could not complete Strava connection. Try again."
+            fail("Couldn’t complete Strava sign-in. Try again.", diagnostic: "Token exchange or storage failed (\(type(of: error)))")
         }
     }
 
@@ -212,6 +226,13 @@ final class StravaConnection: ObservableObject {
             throw StravaConnectionError.invalidResponse
         }
         return tokens
+    }
+
+    private func fail(_ message: String, diagnostic: String) {
+        errorMessage = message
+        // Only curated reasons/status codes: never URLs, response bodies, tokens,
+        // callback parameters, or descriptions of errors that may contain them.
+        logger.error("Strava setup: \(diagnostic, privacy: .public)")
     }
 
     private static func hasActivityWrite(_ scopes: String) -> Bool {
