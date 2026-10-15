@@ -1,6 +1,6 @@
 import Foundation
 
-struct TCXExportFileWriter {
+nonisolated struct TCXExportFileWriter {
     enum WriteError: Error {
         case documentsUnavailable
         case existingFileHasDifferentContents

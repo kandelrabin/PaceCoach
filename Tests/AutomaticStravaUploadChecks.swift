@@ -2,7 +2,7 @@ import Foundation
 import HealthKit
 
 // Compile with WorkoutRunIdentity.swift, StravaUploadAPI.swift,
-// PendingStravaUpload.swift, and AutomaticStravaUploadFlow.swift.
+// PendingStravaUpload.swift, ManualStravaUploadState.swift, and AutomaticStravaUploadFlow.swift.
 // Uses a temporary ledger and injected closures; never contacts Health or Strava.
 @main
 struct AutomaticStravaUploadChecks {
@@ -294,7 +294,8 @@ struct AutomaticStravaUploadChecks {
                 makeTCX: makeTCX ?? { _, _ in self.file },
                 prepareRequest: prepare ?? { _, _ in URLRequest(url: URL(string: "https://example.invalid")!) },
                 preflight: preflight,
-                submitRequest: submit
+                submitRequest: submit,
+                acceptedSources: [savedWorkout(runID: UUID()).sourceRevision.source.bundleIdentifier]
             )
         }
     }

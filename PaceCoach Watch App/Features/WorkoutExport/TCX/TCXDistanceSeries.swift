@@ -2,7 +2,7 @@ import Foundation
 
 /// Converts HealthKit distance *interval deltas* to values at their actual end
 /// timestamps. A nil result means the entire series is unsafe to accumulate.
-enum TCXDistanceSeries {
+nonisolated enum TCXDistanceSeries {
     struct Point: Equatable {
         let timestamp: Date
         let cumulativeMeters: Double

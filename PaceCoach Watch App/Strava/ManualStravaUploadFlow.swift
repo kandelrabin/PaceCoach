@@ -83,100 +83,10 @@ final class ManualStravaUploadFlow: ObservableObject {
         isBusy = true
         defer { isBusy = false }
         message = "Preparing Strava request…"
-
-        // The automatic flow can update the ledger after this screen selected
-        // the run. Never trust the screen's older in-memory snapshot for POST.
-        do {
-            guard let latest = try store.load(runID: runID), latest.isPostEligible else {
-                message = "Upload state changed. Find the saved run again."
-                return
-            }
-        } catch {
-            message = "Could not read upload state. No request was sent."
-            return
-        }
-
-        // Preparation and the read-only probe precede submitting. Failures here
-        // cannot create an upload, even if the probe reached the server.
-        let request: URLRequest
-        do {
-            request = try await WatchStravaUploadService.shared.prepareUpload(tcxFile: file, runID: runID)
-            try await WatchStravaUploadService.shared.checkUploadPreflight()
-        } catch {
-            do {
-                guard var failed = try store.load(runID: runID), failed.isPostEligible else {
-                    message = "Upload state changed. Find the saved run again."
-                    return
-                }
-                failed.preRequestFailed()
-                try store.save(failed)
-                upload = failed
-            } catch {
-                message = "Could not save upload state. No request was sent."
-                return
-            }
-            message = "Request preparation failed before POST. Retry is safe."
-            return
-        }
-
-        var submitting: PendingStravaUpload
-        do {
-            guard let latest = try store.load(runID: runID), latest.isPostEligible else {
-                message = "Upload state changed. Find the saved run again."
-                return
-            }
-            submitting = latest
-        } catch {
-            message = "Could not read upload state. No request was sent."
-            return
-        }
-        guard submitting.beginSubmission() else { return }
-        do {
-            try store.save(submitting)
-            upload = submitting
-        } catch {
-            message = "Could not save upload state. No request was sent."
-            return
-        }
-        message = "Submitting TCX to Strava…"
-        let status: StravaUploadStatus
-        do {
-            status = try await WatchStravaUploadService.shared.submitPrepared(request)
-        } catch {
-            let uploadError = error as? StravaUploadError
-            // A received 4xx rejection is terminal. A transport failure,
-            // malformed success response, or 5xx may hide an accepted POST.
-            switch uploadError {
-            case .duplicate: submitting.rejected(duplicate: true)
-            case .httpStatus(let code) where code >= 400 && code < 500:
-                submitting.rejected(duplicate: false)
-            default: submitting.postOutcomeUnknown()
-            }
-            do {
-                try store.save(submitting)
-                upload = submitting
-                message = submitting.phase == .outcomeUnknown
-                    ? "Outcome unknown: the request may have reached Strava. Do not submit again."
-                    : "Strava rejected the upload. This run will not be resubmitted."
-            } catch {
-                // The durable submitting record is still conservative on relaunch.
-                upload = submitting
-                message = "Could not save Strava's result. Do not submit again."
-            }
-            return
-        }
-
-        submitting.receive(status)
-        upload = submitting
-        do {
-            try store.save(submitting)
-            upload = submitting
-            message = "Strava responded. Check status manually if processing continues."
-        } catch {
-            // Retain the accepted ID in memory. The durable submitting record
-            // becomes outcome unknown on relaunch if this write never succeeds.
-            message = "Strava responded, but its result could not be saved. Do not submit again."
-        }
+        let result = await AutomaticStravaUploadFlow.shared.submitManually(runID: runID, tcxFile: file)
+        // Retain an accepted response in memory even if its durable write failed.
+        upload = result.record ?? (try? store.load(runID: runID))
+        message = result.message
     }
 
     func checkStatus() async {
@@ -189,6 +99,9 @@ final class ManualStravaUploadFlow: ObservableObject {
             let status = try await WatchStravaUploadService.shared.checkStatus(uploadID: uploadID)
             var updated = current
             updated.receive(status)
+            #if DEBUG
+            AutomaticStravaUploadFlow.shared.traceStatusResponse(runID: current.runID, record: updated, response: status)
+            #endif
             try store.save(updated)
             upload = updated
             message = "Strava status updated."

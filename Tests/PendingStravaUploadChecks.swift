@@ -23,6 +23,9 @@ struct PendingStravaUploadChecks {
         check(entry.beginSubmission() && !entry.isPostEligible, "submitting blocks duplicate")
         try store.save(entry)
         entry = try store.loadOrCreate(runID: runID)
+        check(entry.phase == .submitting, "ordinary read preserves active submission")
+        try store.recoverInterruptedSubmissions()
+        entry = try store.loadOrCreate(runID: runID)
         check(entry.phase == .outcomeUnknown && !entry.isPostEligible, "in-flight relaunch is unknown")
         check(!entry.beginSubmission(), "unknown cannot repost")
 

@@ -19,4 +19,15 @@ enum PaceCoachSavedRunSelection {
             return left.startDate < right.startDate
         }
     }
+
+    static func exact(runID: UUID, in workouts: [HKWorkout], acceptedSourceBundleIDs: Set<String>) -> HKWorkout? {
+        let matches = workouts.filter {
+            $0.workoutActivityType == .running &&
+            acceptedSourceBundleIDs.contains($0.sourceRevision.source.bundleIdentifier) &&
+            $0.metadata?[HKMetadataKeyIndoorWorkout] as? Bool != true &&
+            WorkoutRunIdentity.runID(in: $0) == runID
+        }
+        // A reused metadata UUID is ambiguous; never choose a different run.
+        return matches.count == 1 ? matches.first : nil
+    }
 }

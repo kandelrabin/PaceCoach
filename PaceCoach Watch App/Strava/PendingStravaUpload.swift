@@ -100,15 +100,36 @@ struct PendingStravaUploadStore {
     }
 
     func loadOrCreate(runID: UUID) throws -> PendingStravaUpload {
-        if var record = try load(runID: runID) {
-            let previous = record
-            record.recoverAfterRelaunch()
-            if record != previous { try save(record) }
-            return record
-        }
+        if let record = try load(runID: runID) { return record }
         let record = PendingStravaUpload(runID: runID)
         try save(record)
         return record
+    }
+
+    /// Ordinary reads never recover a submission still owned by this process.
+    func records() throws -> [PendingStravaUpload] {
+        guard fileManager.fileExists(atPath: directory.path) else { return [] }
+        return try fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            .compactMap { url -> PendingStravaUpload? in
+                guard url.pathExtension == "json",
+                      let runID = UUID(uuidString: url.deletingPathExtension().lastPathComponent),
+                      url.lastPathComponent == runID.uuidString.lowercased() + ".json" else { return nil }
+                // Preserve corrupt/unreadable files and exclude them from POST.
+                return try? load(runID: runID)
+            }
+            .sorted { $0.runID.uuidString < $1.runID.uuidString }
+    }
+
+    func eligibleRecords() throws -> [PendingStravaUpload] {
+        try records().filter(\.isPostEligible)
+    }
+
+    /// Call at process startup, before any submitter can own an in-flight POST.
+    func recoverInterruptedSubmissions() throws {
+        for var record in try records() where record.phase == .submitting {
+            record.recoverAfterRelaunch()
+            try save(record)
+        }
     }
 
     func save(_ record: PendingStravaUpload) throws {

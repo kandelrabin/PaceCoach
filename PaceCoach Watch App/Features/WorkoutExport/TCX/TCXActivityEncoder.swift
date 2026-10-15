@@ -2,7 +2,7 @@ import Foundation
 
 /// Foundation-only TCX v2 activity export. HealthKit and location types stay at
 /// the CompletedRunExport boundary.
-struct TCXActivityEncoder {
+nonisolated struct TCXActivityEncoder {
     enum EncodingError: Error {
         case invalidWorkoutTime
         case invalidRoutePoint
@@ -179,7 +179,7 @@ struct TCXActivityEncoder {
 
 /// Small typed XML tree: watchOS Foundation provides XMLParser but not
 /// XMLDocument/TCXXMLNode serialization. Escaping is centralized here.
-enum TCXXMLNode {
+nonisolated enum TCXXMLNode {
     case element(String, attributes: [(String, String)] = [], children: [TCXXMLNode] = [])
     case text(String, String)
 

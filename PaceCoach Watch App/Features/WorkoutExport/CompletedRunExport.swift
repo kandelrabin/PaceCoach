@@ -2,21 +2,21 @@ import Foundation
 
 /// A saved PaceCoach run after HealthKit and Core Location have been read.
 /// Values remain in source precision; file-format scaling belongs to an encoder.
-struct CompletedRunExport {
-    enum Activity {
+nonisolated struct CompletedRunExport: Sendable {
+    enum Activity: Sendable {
         case outdoorRun
     }
 
     /// One actual quantity reading. The source sample UUID distinguishes
     /// legitimate same-time readings from a repeated query result.
-    struct Measurement: Hashable {
+    struct Measurement: Hashable, Sendable {
         let sourceSampleID: UUID
         let start: Date
         let end: Date
         let value: Double
     }
 
-    struct RoutePoint: Hashable {
+    struct RoutePoint: Hashable, Sendable {
         let timestamp: Date
         let latitude: Double
         let longitude: Double
@@ -45,7 +45,7 @@ struct CompletedRunExport {
 }
 
 /// Pure ordering at the export boundary; no merging or resampling.
-enum CompletedRunExportOrdering {
+nonisolated enum CompletedRunExportOrdering {
     static func measurements(_ readings: [CompletedRunExport.Measurement]) -> [CompletedRunExport.Measurement] {
         var seen = Set<CompletedRunExport.Measurement>()
         return readings.sorted {

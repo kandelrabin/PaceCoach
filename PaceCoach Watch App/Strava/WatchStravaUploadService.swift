@@ -14,7 +14,9 @@ final class WatchStravaUploadService {
     /// Complete all local work, including token refresh, before the ledger
     /// records an in-flight POST. This method does not submit an upload.
     func prepareUpload(tcxFile: URL, runID: UUID) async throws -> URLRequest {
-        let tcx = try Data(contentsOf: tcxFile)
+        let tcx = try await Task.detached(priority: .utility) {
+            try Data(contentsOf: tcxFile)
+        }.value
         let token = try await WatchStravaTokenService.shared.validAccessToken().value
         return StravaUploadAPI.uploadRequest(tcx: tcx, runID: runID, accessToken: token)
     }
