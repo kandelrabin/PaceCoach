@@ -21,9 +21,11 @@
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>NSHealthShareUsageDescription</key>
-	<string>PaceCoach reads running speed and distance for workouts and pace coaching, and resting heart rate, heart rate, and running workout history to prepare heart-rate-zone coaching.</string>
+	<string>PaceCoach reads running speed, distance, heart rate, resting heart rate, workout history, and workout routes to support running workouts and coaching.</string>
 	<key>NSHealthUpdateUsageDescription</key>
-	<string>PaceCoach saves your outdoor running workout to Health.</string>
+	<string>PaceCoach saves your outdoor running workout and its GPS route to Health.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>PaceCoach records your GPS route during outdoor runs so it can be saved with your workout.</string>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
@@ -32,14 +34,17 @@
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
+		<string>location</string>
 	</array>
 	<key>WKApplication</key>
 	<true/>
+	<key>WKCompanionAppBundleIdentifier</key>
+	<string>com.rabinkandel.PaceCoach</string>
 	<key>WKBackgroundModes</key>
 	<array>
 		<string>workout-processing</string>
 	</array>
-	<key>WKWatchOnly</key>
+	<key>WKRunsIndependentlyOfCompanionApp</key>
 	<true/>
 </dict>
 </plist>

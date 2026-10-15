@@ -61,3 +61,4 @@ fastlane/Preview.html
 fastlane/screenshots/**/*.png
 fastlane/test_output
 PaceCoach Watch App/Mocks/
+PaceCoach iPhone App/LocalConfig/StravaCredentials.local.swift

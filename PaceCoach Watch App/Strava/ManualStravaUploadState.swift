@@ -1,0 +1,33 @@
+import Foundation
+import HealthKit
+
+/// Selection is tied to both the saving app and its saved run ID.
+enum PaceCoachSavedRunSelection {
+    static let acceptedSourceBundleIDs: Set<String> = [
+        "com.rabinkandel.PaceCoach.watchkitapp",
+        "com.rabinkandel.PaceCoach"
+    ]
+
+    static func latest(in workouts: [HKWorkout], acceptedSourceBundleIDs: Set<String>) -> HKWorkout? {
+        workouts.filter { workout in
+            workout.workoutActivityType == .running &&
+            acceptedSourceBundleIDs.contains(workout.sourceRevision.source.bundleIdentifier) &&
+            workout.metadata?[HKMetadataKeyIndoorWorkout] as? Bool != true &&
+            WorkoutRunIdentity.runID(in: workout) != nil
+        }.max { left, right in
+            if left.endDate != right.endDate { return left.endDate < right.endDate }
+            return left.startDate < right.startDate
+        }
+    }
+
+    static func exact(runID: UUID, in workouts: [HKWorkout], acceptedSourceBundleIDs: Set<String>) -> HKWorkout? {
+        let matches = workouts.filter {
+            $0.workoutActivityType == .running &&
+            acceptedSourceBundleIDs.contains($0.sourceRevision.source.bundleIdentifier) &&
+            $0.metadata?[HKMetadataKeyIndoorWorkout] as? Bool != true &&
+            WorkoutRunIdentity.runID(in: $0) == runID
+        }
+        // A reused metadata UUID is ambiguous; never choose a different run.
+        return matches.count == 1 ? matches.first : nil
+    }
+}
