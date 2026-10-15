@@ -5,6 +5,22 @@ import HealthKit
 /// against the already saved HKWorkout.
 @MainActor
 final class WorkoutRouteRecorder: NSObject, CLLocationManagerDelegate {
+    /// Only the system boundaries are injected; filtering, insertion ordering,
+    /// draining, and finalization still run in this recorder in deterministic checks.
+    struct LocationClient {
+        let authorizationStatus: @MainActor () -> CLAuthorizationStatus
+        let servicesEnabled: @MainActor () -> Bool
+        let requestAuthorization: @MainActor () -> Void
+        let startUpdatingLocation: @MainActor () -> Void
+        let stopUpdatingLocation: @MainActor () -> Void
+        let clearDelegate: @MainActor () -> Void
+    }
+
+    struct RouteClient {
+        let insertRouteData: @MainActor ([CLLocation]) async throws -> Void
+        let finishRoute: @MainActor (HKWorkout) async throws -> Void
+    }
+
     private final class DrainSignal {
         private var continuation: CheckedContinuation<Bool, Never>?
 
@@ -30,8 +46,8 @@ final class WorkoutRouteRecorder: NSObject, CLLocationManagerDelegate {
         }
     }
 
-    private let manager = CLLocationManager()
-    private let routeBuilder: HKWorkoutRouteBuilder
+    private let locationClient: LocationClient
+    private let routeClient: RouteClient
     private let startDate: Date
     private var endDate: Date?
     private var started = false
@@ -64,30 +80,52 @@ final class WorkoutRouteRecorder: NSObject, CLLocationManagerDelegate {
         }
     }
 
-    init(routeBuilder: HKWorkoutRouteBuilder, startDate: Date) {
-        self.routeBuilder = routeBuilder
-        self.startDate = startDate
-        super.init()
-        manager.delegate = self
+    convenience init(routeBuilder: HKWorkoutRouteBuilder, startDate: Date) {
+        let manager = CLLocationManager()
         manager.activityType = .fitness
         manager.desiredAccuracy = kCLLocationAccuracyBest
         manager.distanceFilter = kCLDistanceFilterNone
         manager.allowsBackgroundLocationUpdates = true
+        self.init(
+            locationClient: LocationClient(
+                authorizationStatus: { manager.authorizationStatus },
+                servicesEnabled: { CLLocationManager.locationServicesEnabled() },
+                requestAuthorization: { manager.requestWhenInUseAuthorization() },
+                startUpdatingLocation: { manager.startUpdatingLocation() },
+                stopUpdatingLocation: { manager.stopUpdatingLocation() },
+                clearDelegate: { manager.delegate = nil }
+            ),
+            routeClient: RouteClient(
+                insertRouteData: { try await routeBuilder.insertRouteData($0) },
+                finishRoute: { workout in
+                    let _: HKWorkoutRoute = try await routeBuilder.finishRoute(with: workout, metadata: nil)
+                }
+            ),
+            startDate: startDate
+        )
+        manager.delegate = self
+    }
+
+    init(locationClient: LocationClient, routeClient: RouteClient, startDate: Date) {
+        self.locationClient = locationClient
+        self.routeClient = routeClient
+        self.startDate = startDate
+        super.init()
     }
 
     func start() {
         guard !started, endDate == nil else { return }
         started = true
-        authorizationAtStart = manager.authorizationStatus.rawValue
-        servicesAtStart = CLLocationManager.locationServicesEnabled()
-        guard CLLocationManager.locationServicesEnabled() else {
+        authorizationAtStart = locationClient.authorizationStatus().rawValue
+        servicesAtStart = locationClient.servicesEnabled()
+        guard locationClient.servicesEnabled() else {
             return
         }
-        switch manager.authorizationStatus {
+        switch locationClient.authorizationStatus() {
         case .authorizedWhenInUse, .authorizedAlways:
             startCapture()
         case .notDetermined:
-            manager.requestWhenInUseAuthorization()
+            locationClient.requestAuthorization()
         case .denied, .restricted:
             break
         @unknown default:
@@ -102,8 +140,8 @@ final class WorkoutRouteRecorder: NSObject, CLLocationManagerDelegate {
             return
         }
         endDate = date
-        manager.stopUpdatingLocation()
-        manager.delegate = nil
+        locationClient.stopUpdatingLocation()
+        locationClient.clearDelegate()
         capturing = false
         drainTask = Task { [self] in
             let drainStart = Date()
@@ -136,8 +174,8 @@ final class WorkoutRouteRecorder: NSObject, CLLocationManagerDelegate {
             result,
             "received=\(receivedLocationCount), accepted=\(seenLocations.count), inserted=\(insertedLocationCount)",
             "captureStarted=\(captureStarted)",
-            "locationAuth=\(authorizationAtStart.map(String.init) ?? "unknown")→\(manager.authorizationStatus.rawValue)",
-            "services=\(servicesAtStart.map(String.init) ?? "unknown")→\(CLLocationManager.locationServicesEnabled())",
+            "locationAuth=\(authorizationAtStart.map(String.init) ?? "unknown")→\(locationClient.authorizationStatus().rawValue)",
+            "services=\(servicesAtStart.map(String.init) ?? "unknown")→\(locationClient.servicesEnabled())",
             "drain=\(duration), timedOut=\(insertionAbandoned)",
             "locationError=\(lastLocationError ?? "none"), insertError=\(insertFailure)"
         ].joined(separator: "; ")
@@ -164,13 +202,13 @@ final class WorkoutRouteRecorder: NSObject, CLLocationManagerDelegate {
         }
         guard insertedLocationCount > 0 else {
             let reason = insertionError == nil
-                ? "no accepted GPS points; location authorization \(manager.authorizationStatus.rawValue), services \(CLLocationManager.locationServicesEnabled())"
+                ? "no accepted GPS points; location authorization \(locationClient.authorizationStatus().rawValue), services \(locationClient.servicesEnabled())"
                 : "route insert failed"
             return .failed(reason: reason,
                            accepted: accepted, inserted: 0)
         }
         do {
-            let _: HKWorkoutRoute = try await routeBuilder.finishRoute(with: workout, metadata: nil)
+            try await routeClient.finishRoute(workout)
             return .saved(accepted: accepted, inserted: insertedLocationCount)
         } catch {
             let failure = error as NSError
@@ -181,13 +219,7 @@ final class WorkoutRouteRecorder: NSObject, CLLocationManagerDelegate {
 
     nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         Task { @MainActor [weak self] in
-            guard let self, self.started, self.endDate == nil else { return }
-            switch manager.authorizationStatus {
-            case .authorizedWhenInUse, .authorizedAlways:
-                self.startCapture()
-            default:
-                break
-            }
+            self?.authorizationDidChange(to: manager.authorizationStatus)
         }
     }
 
@@ -199,21 +231,45 @@ final class WorkoutRouteRecorder: NSObject, CLLocationManagerDelegate {
 
     nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
         Task { @MainActor [weak self] in
-            guard let self, self.endDate == nil else { return }
-            self.lastLocationError = Self.errorSummary(error)
-            self.manager.stopUpdatingLocation()
-            self.capturing = false
+            self?.receiveLocationError(error)
         }
+    }
+
+    // Actor-isolated event handlers shared by the delegates and deterministic checks.
+    func authorizationDidChange(to status: CLAuthorizationStatus) {
+        guard started, endDate == nil else { return }
+        switch status {
+        case .authorizedWhenInUse, .authorizedAlways:
+            startCapture()
+        default:
+            break
+        }
+    }
+
+    static func coreLocationErrorCode(_ error: Error) -> CLError.Code? {
+        let error = error as NSError
+        guard error.domain == kCLErrorDomain else { return nil }
+        return CLError.Code(rawValue: error.code)
+    }
+
+    func receiveLocationError(_ error: Error) {
+        guard endDate == nil else { return }
+        lastLocationError = Self.errorSummary(error)
+        // locationUnknown is transient: the existing continuous service keeps
+        // trying. Only denied requires stopping it; other errors are diagnostic.
+        guard Self.coreLocationErrorCode(error) == .denied else { return }
+        locationClient.stopUpdatingLocation()
+        capturing = false
     }
 
     private func startCapture() {
         guard started, endDate == nil, !capturing else { return }
         capturing = true
         captureStarted = true
-        manager.startUpdatingLocation()
+        locationClient.startUpdatingLocation()
     }
 
-    private func accept(_ locations: [CLLocation]) {
+    func accept(_ locations: [CLLocation]) {
         receivedLocationCount += locations.count
         guard started, endDate == nil, insertionError == nil else { return }
         let futureLimit = Date().addingTimeInterval(10)
@@ -234,11 +290,11 @@ final class WorkoutRouteRecorder: NSObject, CLLocationManagerDelegate {
             await previous?.value
             guard insertionError == nil, !insertionAbandoned else { return }
             do {
-                try await routeBuilder.insertRouteData(batch)
+                try await routeClient.insertRouteData(batch)
                 insertedLocationCount += batch.count
             } catch {
                 insertionError = error
-                manager.stopUpdatingLocation()
+                locationClient.stopUpdatingLocation()
                 capturing = false
             }
         }
